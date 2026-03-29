@@ -29,6 +29,8 @@ AOI_UNIT_FACTORS_HZ = {
     "GHz": 1.0e9,
 }
 
+LAST_OPEN_DIRECTORY_KEY = "paths/last_open_directory"
+
 
 @dataclass(frozen=True)
 class FrequencyScale:
@@ -52,6 +54,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("Touchstone Viewer")
         self.resize(1500, 920)
         self.setAcceptDrops(True)
+        self.settings = QtCore.QSettings("TouchstoneViewer", "Touch")
 
         self.traces: list[LoadedTrace] = []
         self.frequency_scale = FrequencyScale(1.0e6, "MHz")
@@ -311,9 +314,13 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         existing_paths = {trace.data.path for trace in self.traces}
         new_traces: list[LoadedTrace] = []
         errors: list[str] = []
+        remembered_directory = False
 
         for raw_path in paths:
             path = raw_path.expanduser().resolve()
+            if not remembered_directory:
+                self._remember_directory(path.parent)
+                remembered_directory = True
             if path in existing_paths:
                 continue
 
@@ -344,12 +351,28 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         selected, _ = QtWidgets.QFileDialog.getOpenFileNames(
             self,
             "Open Touchstone Files",
-            "",
+            str(self._default_browser_directory()),
             "Touchstone files (*.s1p *.S1P);;All files (*.*)",
         )
         if not selected:
             return
         self.load_files([Path(path) for path in selected])
+
+    def _default_browser_directory(self) -> Path:
+        saved_directory = self.settings.value(LAST_OPEN_DIRECTORY_KEY, None, type=str)
+        downloads_directory = QtCore.QStandardPaths.writableLocation(
+            QtCore.QStandardPaths.StandardLocation.DownloadLocation
+        )
+        home_directory = QtCore.QStandardPaths.writableLocation(
+            QtCore.QStandardPaths.StandardLocation.HomeLocation
+        )
+        return _resolve_browser_directory(saved_directory, downloads_directory, home_directory)
+
+    def _remember_directory(self, directory: Path) -> None:
+        if not directory.is_dir():
+            return
+        self.settings.setValue(LAST_OPEN_DIRECTORY_KEY, str(directory))
+        self.settings.sync()
 
     def _default_marker_frequency(self) -> float:
         overlap_start = max(trace.data.frequencies_hz[0] for trace in self.traces)
@@ -631,6 +654,20 @@ def _clamp_frequency_region_hz(
         bound_stop_hz - requested_span_hz,
     )
     return (clamped_start_hz, clamped_start_hz + requested_span_hz)
+
+
+def _resolve_browser_directory(
+    saved_directory: str | Path | None,
+    downloads_directory: str | Path | None,
+    home_directory: str | Path | None,
+) -> Path:
+    for candidate in (saved_directory, downloads_directory, home_directory, Path.home()):
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.is_dir():
+            return path.resolve()
+    return Path.cwd()
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

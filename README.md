@@ -2,8 +2,6 @@
 
 Desktop viewer for Touchstone `.s1p` files, built with Python, PySide6, and pyqtgraph.
 
-Primary CLI command: `touch`
-
 It is designed for quick antenna and matching-network inspection with:
 
 - `S11 (dB)` over frequency
@@ -19,6 +17,7 @@ It is designed for quick antenna and matching-network inspection with:
 - Inspect a specific frequency using the movable marker.
 - Define an area of interest with start/stop fields and a shared frequency unit selector.
 - View the same marker position on both the S11 plot and Smith chart.
+- Remember the last opened directory in the file dialog, with Downloads as the first-run default.
 
 ## Requirements
 
@@ -78,6 +77,7 @@ python -m touchstone_viewer
 - Drag `.s1p` files into the window to load them.
 - Drag the vertical marker on the S11 plot, or click on the plot, to update the marker position.
 - Enter the area of interest start and stop values, then choose `kHz`, `MHz`, or `GHz`.
+- The file dialog reopens in the last directory you used. On first launch, it defaults to your Downloads folder.
 
 ## Supported Touchstone Formats
 
@@ -86,14 +86,6 @@ The parser currently supports common 1-port Touchstone option formats:
 - `RI`
 - `MA`
 - `DB`
-
-## Example
-
-If this repository contains sample files, you can launch the viewer like this:
-
-```bash
-uv run touch s11_pc11_default.s1p s11_pc11_balun_200mm.s1p
-```
 
 ## Command Names
 
