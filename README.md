@@ -73,6 +73,29 @@ Or:
 python -m touchstone_viewer
 ```
 
+## Running Tests
+
+Run the full test suite with the `uv` shortcut:
+
+```bash
+uv run touch-test
+```
+
+Run plain pytest directly from the project environment:
+
+```bash
+uv run --group dev pytest
+```
+
+With a standard virtual environment:
+
+```bash
+pip install -e . pytest pytest-cov
+pytest --cov=touchstone_viewer --cov-report=term-missing
+```
+
+The project currently enforces a minimum total coverage of `80%`.
+
 ## Usage
 
 - `Open Files` appends traces to the current session.

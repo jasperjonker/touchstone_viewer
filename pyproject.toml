@@ -16,12 +16,22 @@ dependencies = [
 
 [project.scripts]
 touch = "touchstone_viewer.app:main"
+touch-test = "touchstone_viewer.test_runner:main"
 touchstone-viewer = "touchstone_viewer.app:main"
 
 [dependency-groups]
 dev = [
   "pytest>=8.3",
+  "pytest-cov>=6.1",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["touchstone_viewer"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 80

@@ -43,7 +43,15 @@ class TouchstoneData:
             np.nan + 0.0j,
             denominator,
         )
-        return self.reference_impedance_ohms * (1.0 + self.gamma) / safe_denominator
+        numerator = self.reference_impedance_ohms * (1.0 + self.gamma)
+        impedance = np.full(self.gamma.shape, np.nan + 0.0j, dtype=np.complex128)
+        np.divide(
+            numerator,
+            safe_denominator,
+            out=impedance,
+            where=np.isfinite(safe_denominator),
+        )
+        return impedance
 
     def interpolated_gamma(self, frequency_hz: float) -> complex | None:
         if frequency_hz < self.frequencies_hz[0] or frequency_hz > self.frequencies_hz[-1]:
@@ -158,4 +166,3 @@ def _convert_to_gamma(data_format: str, value_a: float, value_b: float) -> compl
 
 def _parse_float(raw_value: str) -> float:
     return float(raw_value.replace("D", "E").replace("d", "e"))
-
