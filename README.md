@@ -2,6 +2,9 @@
 
 Desktop viewer for Touchstone `.s1p` files, built with Python, PySide6, and pyqtgraph.
 
+<img width="2255" height="1453" alt="image" src="https://github.com/user-attachments/assets/f79e4b16-2b7f-4d28-bc97-41c508008349" />
+
+
 It is designed for quick antenna and matching-network inspection with:
 
 - `S11 (dB)` over frequency
