@@ -13,14 +13,20 @@ It is designed for quick antenna and matching-network inspection with:
 - multiple traces open at the same time for comparison
 - an interactive frequency marker with per-trace readout
 - dedicated `S11` and `S21` tabs
+- a collapsible controls panel for overlays and analysis aids
 - a shaded area of interest on the S11 plot
+- an optional shared horizontal threshold line on the S11 and S21 plots
 
 ## Features
 
 - Open one or more `.s1p` or `.s2p` files from the command line, file dialog, or drag and drop.
 - Compare multiple traces with clear coloring and plot legends.
 - Inspect a specific frequency using the movable marker.
+- Open the `Controls` panel when you want to adjust overlays instead of keeping those inputs on screen all the time.
 - Define an area of interest with start/stop fields and a shared frequency unit selector.
+- Toggle the area-of-interest band on or off without losing its saved frequency range.
+- Toggle a shared threshold line on or off and adjust its dB value for both S11 and S21.
+- Toggle the marker overlay and marker tables on or off.
 - View the same marker position on the `S11` plot, Smith chart, and `S21` plot.
 - Remember the last opened directory in the file dialog, with Downloads as the first-run default.
 
@@ -102,11 +108,16 @@ The project currently enforces a minimum total coverage of `80%`.
 
 - `Open Files` appends traces to the current session.
 - `Clear` removes all loaded traces.
+- `Controls` expands or collapses the advanced overlay panel.
 - Drag `.s1p` or `.s2p` files into the window to load them.
 - Use the `S11` tab for return loss and Smith chart inspection.
 - Use the `S21` tab for transmission comparison on 2-port files.
 - Drag the vertical marker on the `S11` or `S21` plot, or click on either plot, to update the marker position.
-- Enter the area of interest start and stop values, then choose `kHz`, `MHz`, or `GHz`.
+- Use `Area of Interest` -> `Show` to enable or hide the shaded S11 band.
+- Enter the area-of-interest start and stop values, then choose `kHz`, `MHz`, or `GHz`.
+- Use `Threshold` -> `Show` to enable the horizontal reference line on both plots.
+- Adjust the `Threshold` value to move that line, for example `10 dB` to show the `-10 dB` reference.
+- Use `Marker` -> `Show` to enable or hide the vertical marker lines and marker tables.
 - The file dialog reopens in the last directory you used. On first launch, it defaults to your Downloads folder.
 
 ## Supported Touchstone Formats

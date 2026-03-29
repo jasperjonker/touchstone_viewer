@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
+import pytest
 
 from touchstone_viewer.app import LAST_OPEN_DIRECTORY_KEY, TouchstoneViewerWindow
 
@@ -80,6 +81,92 @@ def test_window_initial_load_builds_plots(
     assert window.aoi_stop_input.isEnabled()
     assert window.marker_table.rowCount() == 1
     assert window.tab_widget.count() == 2
+    assert window.controls_panel.isHidden()
+    assert window.controls_toggle_button.arrowType() == QtCore.Qt.ArrowType.RightArrow
+
+    window.close()
+
+
+def test_controls_panel_and_overlay_toggles(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "controls.s1p")
+
+    window = TouchstoneViewerWindow([file_path])
+
+    assert window.controls_panel.isHidden()
+    window.controls_toggle_button.setChecked(True)
+
+    assert not window.controls_panel.isHidden()
+    assert window.controls_toggle_button.arrowType() == QtCore.Qt.ArrowType.DownArrow
+    assert window.aoi_region_item is not None
+    assert window.aoi_region_item.isVisible()
+    assert window.marker_line is not None
+    assert window.marker_line.isVisible()
+    assert not window.marker_table.isHidden()
+    assert not window.s21_marker_table.isHidden()
+
+    window.aoi_enabled_checkbox.setChecked(False)
+
+    assert not window.aoi_start_input.isEnabled()
+    assert not window.aoi_stop_input.isEnabled()
+    assert window.aoi_region_item is not None
+    assert not window.aoi_region_item.isVisible()
+
+    window.marker_enabled_checkbox.setChecked(False)
+
+    assert window.marker_line is not None
+    assert window.s21_marker_line is not None
+    assert not window.marker_line.isVisible()
+    assert not window.s21_marker_line.isVisible()
+    assert window.marker_table.rowCount() == 0
+    assert window.s21_marker_table.rowCount() == 0
+    assert window.marker_table.isHidden()
+    assert window.s21_marker_table.isHidden()
+
+    window.marker_enabled_checkbox.setChecked(True)
+
+    assert window.marker_line.isVisible()
+    assert window.s21_marker_line.isVisible()
+    assert window.marker_table.rowCount() == 1
+    assert window.s21_marker_table.rowCount() == 1
+    assert not window.marker_table.isHidden()
+    assert not window.s21_marker_table.isHidden()
+
+    window.close()
+
+
+def test_empty_plots_use_negative_db_range_and_default_threshold(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    window = TouchstoneViewerWindow([])
+
+    s11_y_range = window.s11_plot.getPlotItem().viewRange()[1]
+    s21_y_range = window.s21_plot.getPlotItem().viewRange()[1]
+
+    assert s11_y_range == pytest.approx([-40.0, 0.0])
+    assert s21_y_range == pytest.approx([-40.0, 0.0])
+    assert window.s11_threshold_line is not None
+    assert window.s21_threshold_line is not None
+    assert window.s11_threshold_line.value() == pytest.approx(-10.0)
+    assert window.s21_threshold_line.value() == pytest.approx(-10.0)
+    assert not window.threshold_enabled_checkbox.isChecked()
+    assert not window.threshold_input.isEnabled()
+    assert not window.s11_threshold_line.isVisible()
+    assert not window.s21_threshold_line.isVisible()
+
+    window.threshold_enabled_checkbox.setChecked(True)
+    window.threshold_input.setValue(6.0)
+
+    assert window.threshold_input.isEnabled()
+    assert window.s11_threshold_line.isVisible()
+    assert window.s21_threshold_line.isVisible()
+    assert window.s11_threshold_line.value() == pytest.approx(-6.0)
+    assert window.s21_threshold_line.value() == pytest.approx(-6.0)
 
     window.close()
 

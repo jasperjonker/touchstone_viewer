@@ -30,6 +30,12 @@ AOI_UNIT_FACTORS_HZ = {
 }
 
 LAST_OPEN_DIRECTORY_KEY = "paths/last_open_directory"
+DEFAULT_EMPTY_DB_RANGE = (-40.0, 0.0)
+DEFAULT_THRESHOLD_DB = 10.0
+DEFAULT_THRESHOLD_VISIBLE = False
+DEFAULT_CONTROLS_VISIBLE = False
+DEFAULT_AOI_VISIBLE = True
+DEFAULT_MARKER_VISIBLE = True
 
 
 @dataclass(frozen=True)
@@ -67,6 +73,8 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.s21_marker_plot_label: pg.TextItem | None = None
         self.aoi_region_hz: tuple[float, float] | None = None
         self.aoi_region_item: pg.LinearRegionItem | None = None
+        self.s11_threshold_line: pg.InfiniteLine | None = None
+        self.s21_threshold_line: pg.InfiniteLine | None = None
         self._updating_marker = False
         self._updating_aoi_controls = False
 
@@ -82,47 +90,40 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        controls = QtWidgets.QHBoxLayout()
-        controls.setSpacing(8)
+        header = QtWidgets.QHBoxLayout()
+        header.setSpacing(8)
 
         open_button = QtWidgets.QPushButton("Open Files")
         open_button.clicked.connect(self._open_files_dialog)
-        controls.addWidget(open_button)
+        header.addWidget(open_button)
 
         clear_button = QtWidgets.QPushButton("Clear")
         clear_button.clicked.connect(self.clear_traces)
-        controls.addWidget(clear_button)
+        header.addWidget(clear_button)
 
-        controls.addSpacing(12)
+        header.addSpacing(12)
 
         self.summary_label = QtWidgets.QLabel(
             "Drop .s1p or .s2p files here or open them from the dialog."
         )
-        controls.addWidget(self.summary_label, stretch=1)
+        header.addWidget(self.summary_label, stretch=1)
 
-        aoi_prefix = QtWidgets.QLabel("Area of Interest")
-        controls.addWidget(aoi_prefix)
+        self.controls_toggle_button = QtWidgets.QToolButton()
+        self.controls_toggle_button.setText("Controls")
+        self.controls_toggle_button.setCheckable(True)
+        self.controls_toggle_button.setChecked(DEFAULT_CONTROLS_VISIBLE)
+        self.controls_toggle_button.setToolButtonStyle(
+            QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        self.controls_toggle_button.setArrowType(QtCore.Qt.ArrowType.RightArrow)
+        self.controls_toggle_button.toggled.connect(self._set_controls_panel_visible)
+        header.addWidget(self.controls_toggle_button)
 
-        self.aoi_start_input = self._build_aoi_spin_box()
-        self.aoi_start_input.valueChanged.connect(self._handle_aoi_value_changed)
-        controls.addWidget(self.aoi_start_input)
+        layout.addLayout(header)
 
-        aoi_to_label = QtWidgets.QLabel("to")
-        controls.addWidget(aoi_to_label)
-
-        self.aoi_stop_input = self._build_aoi_spin_box()
-        self.aoi_stop_input.valueChanged.connect(self._handle_aoi_value_changed)
-        controls.addWidget(self.aoi_stop_input)
-
-        self.aoi_unit_combo = QtWidgets.QComboBox()
-        self.aoi_unit_combo.addItems(AOI_UNIT_FACTORS_HZ.keys())
-        self.aoi_unit_combo.setCurrentText("GHz")
-        self.aoi_unit_combo.currentTextChanged.connect(self._handle_aoi_unit_changed)
-        controls.addWidget(self.aoi_unit_combo)
-
-        self._set_aoi_controls_enabled(False)
-
-        layout.addLayout(controls)
+        self.controls_panel = self._build_controls_panel()
+        layout.addWidget(self.controls_panel)
+        self._set_controls_panel_visible(DEFAULT_CONTROLS_VISIBLE)
 
         self.tab_widget = QtWidgets.QTabWidget()
         self.tab_widget.addTab(self._build_s11_tab(), "S11")
@@ -130,6 +131,103 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.tab_widget, stretch=1)
 
         self.setCentralWidget(central_widget)
+
+    def _build_controls_panel(self) -> QtWidgets.QWidget:
+        panel = QtWidgets.QFrame()
+        panel.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        panel.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+
+        layout = QtWidgets.QHBoxLayout(panel)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+
+        aoi_section = QtWidgets.QWidget()
+        aoi_layout = QtWidgets.QHBoxLayout(aoi_section)
+        aoi_layout.setContentsMargins(0, 0, 0, 0)
+        aoi_layout.setSpacing(8)
+
+        aoi_prefix = QtWidgets.QLabel("Area of Interest")
+        aoi_layout.addWidget(aoi_prefix)
+        self.aoi_enabled_checkbox = QtWidgets.QCheckBox("Show")
+        self.aoi_enabled_checkbox.setChecked(DEFAULT_AOI_VISIBLE)
+        self.aoi_enabled_checkbox.toggled.connect(self._handle_aoi_visibility_changed)
+        aoi_layout.addWidget(self.aoi_enabled_checkbox)
+
+        self.aoi_start_input = self._build_aoi_spin_box()
+        self.aoi_start_input.valueChanged.connect(self._handle_aoi_value_changed)
+        aoi_layout.addWidget(self.aoi_start_input)
+
+        aoi_to_label = QtWidgets.QLabel("to")
+        aoi_layout.addWidget(aoi_to_label)
+
+        self.aoi_stop_input = self._build_aoi_spin_box()
+        self.aoi_stop_input.valueChanged.connect(self._handle_aoi_value_changed)
+        aoi_layout.addWidget(self.aoi_stop_input)
+
+        self.aoi_unit_combo = QtWidgets.QComboBox()
+        self.aoi_unit_combo.addItems(AOI_UNIT_FACTORS_HZ.keys())
+        self.aoi_unit_combo.setCurrentText("GHz")
+        self.aoi_unit_combo.currentTextChanged.connect(self._handle_aoi_unit_changed)
+        aoi_layout.addWidget(self.aoi_unit_combo)
+
+        layout.addWidget(aoi_section)
+        layout.addWidget(self._build_panel_separator())
+
+        threshold_section = QtWidgets.QWidget()
+        threshold_layout = QtWidgets.QHBoxLayout(threshold_section)
+        threshold_layout.setContentsMargins(0, 0, 0, 0)
+        threshold_layout.setSpacing(8)
+
+        threshold_prefix = QtWidgets.QLabel("Threshold")
+        threshold_layout.addWidget(threshold_prefix)
+
+        self.threshold_enabled_checkbox = QtWidgets.QCheckBox("Show")
+        self.threshold_enabled_checkbox.setChecked(DEFAULT_THRESHOLD_VISIBLE)
+        self.threshold_enabled_checkbox.toggled.connect(self._handle_threshold_visibility_changed)
+        threshold_layout.addWidget(self.threshold_enabled_checkbox)
+
+        self.threshold_input = QtWidgets.QDoubleSpinBox()
+        self.threshold_input.setDecimals(2)
+        self.threshold_input.setRange(0.0, 200.0)
+        self.threshold_input.setSingleStep(0.5)
+        self.threshold_input.setValue(DEFAULT_THRESHOLD_DB)
+        self.threshold_input.setSuffix(" dB")
+        self.threshold_input.setMinimumWidth(95)
+        self.threshold_input.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        self.threshold_input.valueChanged.connect(self._handle_threshold_changed)
+        self.threshold_input.setEnabled(DEFAULT_THRESHOLD_VISIBLE)
+        threshold_layout.addWidget(self.threshold_input)
+
+        layout.addWidget(threshold_section)
+        layout.addWidget(self._build_panel_separator())
+
+        marker_section = QtWidgets.QWidget()
+        marker_layout = QtWidgets.QHBoxLayout(marker_section)
+        marker_layout.setContentsMargins(0, 0, 0, 0)
+        marker_layout.setSpacing(8)
+
+        marker_prefix = QtWidgets.QLabel("Marker")
+        marker_layout.addWidget(marker_prefix)
+
+        self.marker_enabled_checkbox = QtWidgets.QCheckBox("Show")
+        self.marker_enabled_checkbox.setChecked(DEFAULT_MARKER_VISIBLE)
+        self.marker_enabled_checkbox.toggled.connect(self._handle_marker_visibility_changed)
+        marker_layout.addWidget(self.marker_enabled_checkbox)
+
+        layout.addWidget(marker_section)
+        layout.addStretch(1)
+
+        return panel
+
+    def _build_panel_separator(self) -> QtWidgets.QFrame:
+        separator = QtWidgets.QFrame()
+        separator.setFrameShape(QtWidgets.QFrame.Shape.VLine)
+        separator.setFrameShadow(QtWidgets.QFrame.Shadow.Sunken)
+        separator.setStyleSheet("color: #cbd5e1;")
+        return separator
 
     def _build_s11_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget()
@@ -212,6 +310,12 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         spin_box.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
         return spin_box
 
+    def _set_controls_panel_visible(self, visible: bool) -> None:
+        self.controls_panel.setVisible(visible)
+        self.controls_toggle_button.setArrowType(
+            QtCore.Qt.ArrowType.DownArrow if visible else QtCore.Qt.ArrowType.RightArrow
+        )
+
     def _refresh_plots(self) -> None:
         self._choose_frequency_scale()
 
@@ -221,6 +325,8 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_plot_label = None
         self.s21_marker_plot_label = None
         self.aoi_region_item = None
+        self.s11_threshold_line = None
+        self.s21_threshold_line = None
 
         self._configure_s11_plot()
         self._configure_smith_plot()
@@ -229,7 +335,6 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         if self.traces:
             self._add_aoi_region()
             self._sync_aoi_controls_to_region()
-            self._set_aoi_controls_enabled(True)
 
         for trace in self.traces:
             self._add_trace_items(trace)
@@ -248,19 +353,15 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             self.s21_plot.addItem(self.s21_marker_line, ignoreBounds=True)
 
             self._set_marker_line_values(self.marker_frequency_hz)
-            self._update_marker_outputs()
         else:
             self.marker_line = None
             self.s21_marker_line = None
             self.marker_frequency_hz = None
             self.aoi_region_hz = None
-            self._update_marker_table()
-            self._update_s21_marker_table()
-            self._update_marker_plot_label()
-            self._update_s21_marker_plot_label()
             self._reset_aoi_controls()
-            self._set_aoi_controls_enabled(False)
 
+        self._sync_control_states()
+        self._update_marker_outputs()
         self.summary_label.setText(f"{len(self.traces)} trace(s) loaded")
 
     def _configure_s11_plot(self) -> None:
@@ -271,9 +372,14 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         plot_item.showGrid(x=True, y=True, alpha=0.18)
         plot_item.addLegend(labelTextColor="#24313f", brush="#ffffffdd")
         self.s11_plot.setMouseEnabled(x=True, y=True)
+        if not self.traces:
+            plot_item.setYRange(*DEFAULT_EMPTY_DB_RANGE, padding=0.0)
 
         self.marker_plot_label = self._build_marker_plot_label()
         self.s11_plot.addItem(self.marker_plot_label, ignoreBounds=True)
+        self.s11_threshold_line = self._build_threshold_line()
+        self.s11_plot.addItem(self.s11_threshold_line, ignoreBounds=True)
+        self._update_threshold_lines()
         self._update_marker_plot_label_position()
 
     def _configure_smith_plot(self) -> None:
@@ -290,9 +396,14 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         plot_item.showGrid(x=True, y=True, alpha=0.18)
         plot_item.addLegend(labelTextColor="#24313f", brush="#ffffffdd")
         self.s21_plot.setMouseEnabled(x=True, y=True)
+        if not self.traces:
+            plot_item.setYRange(*DEFAULT_EMPTY_DB_RANGE, padding=0.0)
 
         self.s21_marker_plot_label = self._build_marker_plot_label()
         self.s21_plot.addItem(self.s21_marker_plot_label, ignoreBounds=True)
+        self.s21_threshold_line = self._build_threshold_line()
+        self.s21_plot.addItem(self.s21_threshold_line, ignoreBounds=True)
+        self._update_threshold_lines()
         self._update_s21_marker_plot_label_position()
 
     def _build_marker_plot_label(self) -> pg.TextItem:
@@ -305,6 +416,20 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         )
         label.setZValue(30)
         return label
+
+    def _build_threshold_line(self) -> pg.InfiniteLine:
+        return pg.InfiniteLine(
+            angle=0,
+            movable=False,
+            pen=pg.mkPen("#dc2626", width=1.8, style=QtCore.Qt.PenStyle.DashLine),
+            label="{value:.1f} dB",
+            labelOpts={
+                "position": 0.95,
+                "color": "#dc2626",
+                "fill": "#fff7eddd",
+                "movable": False,
+            },
+        )
 
     def _choose_frequency_scale(self) -> None:
         if not self.traces:
@@ -466,6 +591,9 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         return 0.5 * (first_trace.frequencies_hz[0] + first_trace.frequencies_hz[-1])
 
     def _handle_plot_click(self, plot_widget: pg.PlotWidget, event: object) -> None:
+        if not self._marker_overlay_enabled():
+            return
+
         if not hasattr(event, "scenePos"):
             return
 
@@ -481,7 +609,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self._update_marker_outputs()
 
     def _handle_s11_marker_moved(self) -> None:
-        if not self.marker_line or self._updating_marker:
+        if not self.marker_line or self._updating_marker or not self._marker_overlay_enabled():
             return
 
         self.marker_frequency_hz = self.marker_line.value() * self.frequency_scale.factor_hz
@@ -489,7 +617,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self._update_marker_outputs()
 
     def _handle_s21_marker_moved(self) -> None:
-        if not self.s21_marker_line or self._updating_marker:
+        if not self.s21_marker_line or self._updating_marker or not self._marker_overlay_enabled():
             return
 
         self.marker_frequency_hz = self.s21_marker_line.value() * self.frequency_scale.factor_hz
@@ -520,13 +648,47 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         else:
             self._reset_aoi_controls()
 
+    def _handle_aoi_visibility_changed(self, _visible: bool) -> None:
+        self._sync_control_states()
+
+    def _handle_threshold_changed(self, _value: float) -> None:
+        self._update_threshold_lines()
+
+    def _handle_threshold_visibility_changed(self, visible: bool) -> None:
+        self.threshold_input.setEnabled(visible)
+        self._update_threshold_lines()
+
+    def _handle_marker_visibility_changed(self, _visible: bool) -> None:
+        self._sync_control_states()
+        self._update_marker_outputs()
+
     def _aoi_unit_factor_hz(self) -> float:
         return AOI_UNIT_FACTORS_HZ[self.aoi_unit_combo.currentText()]
+
+    def _aoi_overlay_enabled(self) -> bool:
+        return bool(self.traces) and self.aoi_enabled_checkbox.isChecked()
+
+    def _marker_overlay_enabled(self) -> bool:
+        return bool(self.traces) and self.marker_enabled_checkbox.isChecked()
+
+    def _sync_control_states(self) -> None:
+        has_traces = bool(self.traces)
+        self.aoi_enabled_checkbox.setEnabled(has_traces)
+        self.marker_enabled_checkbox.setEnabled(has_traces)
+        self._set_aoi_controls_enabled(self._aoi_overlay_enabled())
+        self._update_aoi_region_visibility()
+        self._update_marker_visibility()
 
     def _set_aoi_controls_enabled(self, enabled: bool) -> None:
         self.aoi_start_input.setEnabled(enabled)
         self.aoi_stop_input.setEnabled(enabled)
         self.aoi_unit_combo.setEnabled(enabled)
+
+    def _update_aoi_region_visibility(self) -> None:
+        if self.aoi_region_item is None:
+            return
+
+        self.aoi_region_item.setVisible(self._aoi_overlay_enabled())
 
     def _reset_aoi_controls(self) -> None:
         self._updating_aoi_controls = True
@@ -581,6 +743,39 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             ]
         )
 
+    def _update_threshold_lines(self) -> None:
+        threshold_db = -float(self.threshold_input.value())
+        visible = self.threshold_enabled_checkbox.isChecked()
+        if self.s11_threshold_line is not None:
+            self.s11_threshold_line.setValue(threshold_db)
+            self.s11_threshold_line.setVisible(visible)
+        if self.s21_threshold_line is not None:
+            self.s21_threshold_line.setValue(threshold_db)
+            self.s21_threshold_line.setVisible(visible)
+
+    def _update_marker_visibility(self) -> None:
+        visible = self._marker_overlay_enabled()
+
+        if visible and self.marker_frequency_hz is None and self.traces:
+            self.marker_frequency_hz = self._default_marker_frequency()
+
+        for marker_line in (self.marker_line, self.s21_marker_line):
+            if marker_line is not None:
+                marker_line.setVisible(visible)
+
+        for marker_table in (self.marker_table, self.s21_marker_table):
+            marker_table.setHidden(not visible)
+
+        if not visible:
+            for trace in self.traces:
+                self._set_scatter_point(trace.s11_marker, None)
+                self._set_scatter_point(trace.smith_marker, None)
+                self._set_scatter_point(trace.s21_marker, None)
+            return
+
+        if self.marker_frequency_hz is not None:
+            self._set_marker_line_values(self.marker_frequency_hz)
+
     def _set_marker_line_values(self, frequency_hz: float) -> None:
         self._updating_marker = True
         try:
@@ -621,6 +816,11 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         position_callback: callable,
     ) -> None:
         if label is None:
+            return
+
+        visible = self._marker_overlay_enabled()
+        label.setVisible(visible)
+        if not visible:
             return
 
         if frequency_hz is None:
@@ -668,6 +868,13 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         return (minimum_hz, maximum_hz)
 
     def _update_marker_table(self) -> None:
+        if not self._marker_overlay_enabled():
+            self.marker_table.setRowCount(0)
+            for trace in self.traces:
+                self._set_scatter_point(trace.s11_marker, None)
+                self._set_scatter_point(trace.smith_marker, None)
+            return
+
         self.marker_table.setRowCount(len(self.traces))
 
         for row_index, trace in enumerate(self.traces):
@@ -706,6 +913,12 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_table.resizeRowsToContents()
 
     def _update_s21_marker_table(self) -> None:
+        if not self._marker_overlay_enabled():
+            self.s21_marker_table.setRowCount(0)
+            for trace in self.traces:
+                self._set_scatter_point(trace.s21_marker, None)
+            return
+
         self.s21_marker_table.setRowCount(len(self.traces))
 
         for row_index, trace in enumerate(self.traces):
