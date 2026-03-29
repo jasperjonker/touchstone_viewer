@@ -435,8 +435,8 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                 "Freq",
                 "S11 (dB)",
                 "ΔRef (dB)",
-                "|S11|",
-                "ΔRef |S11|",
+                "|S11| (lin)",
+                "ΔRef |S11| (lin)",
                 "Angle (deg)",
                 "Z (ohm)",
             ]
@@ -461,7 +461,15 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.s21_plot, stretch=1)
 
         self.s21_marker_table = self._build_marker_table(
-            ["Trace", "Freq", "S21 (dB)", "ΔRef (dB)", "|S21|", "ΔRef |S21|", "Angle (deg)"]
+            [
+                "Trace",
+                "Freq",
+                "S21 (dB)",
+                "ΔRef (dB)",
+                "|S21| (lin)",
+                "ΔRef |S21| (lin)",
+                "Angle (deg)",
+            ]
         )
         layout.addWidget(self.s21_marker_table)
 
@@ -585,7 +593,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
     def _configure_smith_plot(self) -> None:
         plot_item = self.smith_plot.getPlotItem()
         plot_item.setTitle("Smith Chart")
-        self.smith_plot.setMouseEnabled(x=False, y=False)
+        self.smith_plot.setMouseEnabled(x=True, y=True)
         add_smith_grid(plot_item)
 
     def _configure_s21_plot(self) -> None:

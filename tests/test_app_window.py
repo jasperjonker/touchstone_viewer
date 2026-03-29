@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 import pytest
 
@@ -88,6 +89,8 @@ def test_window_initial_load_builds_plots(
     assert window.tab_widget.count() == 2
     assert window.controls_panel.isHidden()
     assert window.controls_toggle_button.arrowType() == QtCore.Qt.ArrowType.RightArrow
+    assert window.smith_plot.getViewBox().state["mouseEnabled"] == [True, True]
+    assert window.smith_plot.getViewBox().state["mouseMode"] == pg.ViewBox.RectMode
 
     window.close()
 

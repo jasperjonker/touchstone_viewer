@@ -6,20 +6,36 @@ from PySide6 import QtCore, QtGui
 
 _RESISTANCE_VALUES = [0.0, 0.2, 0.5, 1.0, 2.0, 5.0]
 _REACTANCE_VALUES = [0.2, 0.5, 1.0, 2.0, 5.0]
+_SMITH_DEFAULT_BOUNDARY = 1.05
+_SMITH_LIMIT = 1.25
+_SMITH_MIN_RANGE = 0.08
 
 
 def add_smith_grid(plot_item: pg.PlotItem) -> None:
+    view_box = plot_item.getViewBox()
     plot_item.setAspectLocked(True)
     plot_item.enableAutoRange(False)
-    plot_item.setXRange(-1.05, 1.05, padding=0.0)
-    plot_item.setYRange(-1.05, 1.05, padding=0.0)
+    view_box.setMouseMode(pg.ViewBox.RectMode)
+    view_box.setMouseEnabled(x=True, y=True)
+    view_box.setLimits(
+        xMin=-_SMITH_LIMIT,
+        xMax=_SMITH_LIMIT,
+        yMin=-_SMITH_LIMIT,
+        yMax=_SMITH_LIMIT,
+        minXRange=_SMITH_MIN_RANGE,
+        maxXRange=2.0 * _SMITH_LIMIT,
+        minYRange=_SMITH_MIN_RANGE,
+        maxYRange=2.0 * _SMITH_LIMIT,
+    )
+    plot_item.setXRange(-_SMITH_DEFAULT_BOUNDARY, _SMITH_DEFAULT_BOUNDARY, padding=0.0)
+    plot_item.setYRange(-_SMITH_DEFAULT_BOUNDARY, _SMITH_DEFAULT_BOUNDARY, padding=0.0)
     plot_item.setLabel("bottom", "Re(Gamma)")
     plot_item.setLabel("left", "Im(Gamma)")
     plot_item.showGrid(x=False, y=False)
 
-    boundary_pen = pg.mkPen("#1f2937", width=2)
-    axis_pen = pg.mkPen("#9aa5b1", width=1)
-    grid_pen = pg.mkPen("#cbd2d9", width=1, style=QtCore.Qt.PenStyle.DashLine)
+    boundary_pen = pg.mkPen("#0f172a", width=2.2)
+    axis_pen = pg.mkPen("#64748b", width=1.1)
+    grid_pen = pg.mkPen("#94a3b8", width=1, style=QtCore.Qt.PenStyle.DashLine)
 
     theta = np.linspace(0.0, 2.0 * np.pi, 721)
     unit_circle = np.exp(1j * theta)
@@ -88,4 +104,3 @@ def _format_grid_value(value: float) -> str:
     if value.is_integer():
         return str(int(value))
     return f"{value:.1f}"
-

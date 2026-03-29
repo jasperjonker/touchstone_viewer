@@ -19,4 +19,8 @@ def test_add_smith_grid_adds_plot_items(qapp) -> None:
     add_smith_grid(widget.getPlotItem())
 
     assert len(widget.getPlotItem().items) > 5
+    assert widget.getViewBox().state["mouseEnabled"] == [True, True]
+    assert widget.getViewBox().state["mouseMode"] == pg.ViewBox.RectMode
+    assert widget.getViewBox().state["limits"]["xRange"][0] == 0.08
+    assert widget.getViewBox().state["limits"]["yRange"][0] == 0.08
     widget.close()
