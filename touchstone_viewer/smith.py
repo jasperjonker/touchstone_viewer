@@ -27,8 +27,7 @@ def add_smith_grid(plot_item: pg.PlotItem) -> None:
         minYRange=_SMITH_MIN_RANGE,
         maxYRange=2.0 * _SMITH_LIMIT,
     )
-    plot_item.setXRange(-_SMITH_DEFAULT_BOUNDARY, _SMITH_DEFAULT_BOUNDARY, padding=0.0)
-    plot_item.setYRange(-_SMITH_DEFAULT_BOUNDARY, _SMITH_DEFAULT_BOUNDARY, padding=0.0)
+    reset_smith_view(plot_item)
     plot_item.setLabel("bottom", "Re(Gamma)")
     plot_item.setLabel("left", "Im(Gamma)")
     plot_item.showGrid(x=False, y=False)
@@ -58,6 +57,11 @@ def add_smith_grid(plot_item: pg.PlotItem) -> None:
             plot_item.addItem(pg.PlotDataItem(gamma.real, gamma.imag, pen=grid_pen))
 
     _add_grid_labels(plot_item)
+
+
+def reset_smith_view(plot_item: pg.PlotItem) -> None:
+    plot_item.setXRange(-_SMITH_DEFAULT_BOUNDARY, _SMITH_DEFAULT_BOUNDARY, padding=0.0)
+    plot_item.setYRange(-_SMITH_DEFAULT_BOUNDARY, _SMITH_DEFAULT_BOUNDARY, padding=0.0)
 
 
 def normalized_impedance_to_gamma(z: np.ndarray | complex) -> np.ndarray:

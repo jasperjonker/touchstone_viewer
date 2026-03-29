@@ -9,7 +9,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from .smith import add_smith_grid
+from .smith import add_smith_grid, reset_smith_view
 from .touchstone import TouchstoneData, gamma_to_impedance, load_touchstone
 
 TRACE_COLORS = [
@@ -122,6 +122,10 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         clear_button = QtWidgets.QPushButton("Clear")
         clear_button.clicked.connect(self.clear_traces)
         header.addWidget(clear_button)
+
+        self.reset_view_button = QtWidgets.QPushButton("Reset View")
+        self.reset_view_button.clicked.connect(self.reset_view)
+        header.addWidget(self.reset_view_button)
 
         header.addSpacing(12)
 
@@ -613,6 +617,47 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.s21_plot.addItem(self.s21_threshold_line, ignoreBounds=True)
         self._update_threshold_lines()
         self._update_s21_marker_plot_label_position()
+
+    def reset_view(self) -> None:
+        visible_traces = self._visible_traces()
+        self._reset_db_plot_view(
+            self.s11_plot,
+            [trace.data.s11_db() for trace in visible_traces],
+        )
+        self._reset_db_plot_view(
+            self.s21_plot,
+            [trace.data.s21_db() for trace in visible_traces if trace.data.has_parameter(2, 1)],
+        )
+        reset_smith_view(self.smith_plot.getPlotItem())
+        self._update_marker_plot_label_position()
+        self._update_s21_marker_plot_label_position()
+
+    def _reset_db_plot_view(
+        self,
+        plot_widget: pg.PlotWidget,
+        y_data_sets: Sequence[np.ndarray],
+    ) -> None:
+        plot_item = plot_widget.getPlotItem()
+        frequency_span_hz = self._frequency_span_hz()
+        if frequency_span_hz is None:
+            plot_item.setXRange(0.0, 1.0, padding=0.0)
+        else:
+            plot_item.setXRange(
+                frequency_span_hz[0] / self.frequency_scale.factor_hz,
+                frequency_span_hz[1] / self.frequency_scale.factor_hz,
+                padding=0.0,
+            )
+
+        if not y_data_sets:
+            plot_item.setYRange(*DEFAULT_EMPTY_DB_RANGE, padding=0.0)
+            return
+
+        min_y = min(float(np.min(values)) for values in y_data_sets)
+        max_y = max(float(np.max(values)) for values in y_data_sets)
+        if np.isclose(min_y, max_y):
+            min_y -= 1.0
+            max_y += 1.0
+        plot_item.setYRange(min_y, max_y, padding=0.0)
 
     def _build_marker_plot_label(self) -> pg.TextItem:
         label = pg.TextItem(

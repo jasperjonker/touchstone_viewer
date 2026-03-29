@@ -255,6 +255,46 @@ def test_empty_plots_use_negative_db_range_and_default_threshold(
     window.close()
 
 
+def test_reset_view_restores_frequency_and_smith_ranges(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_two_port_file(tmp_path / "reset_view.s2p")
+
+    window = TouchstoneViewerWindow([file_path])
+    trace = window.traces[0]
+    default_smith_x_range, default_smith_y_range = window.smith_plot.getPlotItem().viewRange()
+
+    window.s11_plot.getPlotItem().setXRange(2.1, 2.2, padding=0.0)
+    window.s11_plot.getPlotItem().setYRange(-35.0, -25.0, padding=0.0)
+    window.s21_plot.getPlotItem().setXRange(2.1, 2.2, padding=0.0)
+    window.s21_plot.getPlotItem().setYRange(-25.0, -15.0, padding=0.0)
+    window.smith_plot.getPlotItem().setXRange(-0.2, 0.2, padding=0.0)
+    window.smith_plot.getPlotItem().setYRange(-0.2, 0.2, padding=0.0)
+
+    window.reset_view_button.click()
+
+    assert window.s11_plot.getPlotItem().viewRange()[0] == pytest.approx([2.0, 2.5])
+    assert window.s11_plot.getPlotItem().viewRange()[1] == pytest.approx(
+        [
+            float(trace.data.s11_db().min()),
+            float(trace.data.s11_db().max()),
+        ]
+    )
+    assert window.s21_plot.getPlotItem().viewRange()[0] == pytest.approx([2.0, 2.5])
+    assert window.s21_plot.getPlotItem().viewRange()[1] == pytest.approx(
+        [
+            float(trace.data.s21_db().min()),
+            float(trace.data.s21_db().max()),
+        ]
+    )
+    assert window.smith_plot.getPlotItem().viewRange()[0] == pytest.approx(default_smith_x_range)
+    assert window.smith_plot.getPlotItem().viewRange()[1] == pytest.approx(default_smith_y_range)
+
+    window.close()
+
+
 def test_open_files_dialog_uses_default_directory_and_remembers_last_folder(
     monkeypatch,
     qapp: QtWidgets.QApplication,
