@@ -54,6 +54,11 @@ def _write_touchstone_file(path: Path) -> Path:
     return path
 
 
+def _write_touchstone_file_with_content(path: Path, content: str) -> Path:
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def _write_touchstone_two_port_file(path: Path) -> Path:
     path.write_text(
         "# GHz S RI R 50\n"
@@ -76,7 +81,7 @@ def test_window_initial_load_builds_plots(
     assert len(window.traces) == 1
     assert window.marker_line is not None
     assert window.aoi_region_item is not None
-    assert window.summary_label.text() == "1 trace(s) loaded"
+    assert window.summary_label.text() == "1 trace(s) loaded, 1 visible"
     assert window.aoi_start_input.isEnabled()
     assert window.aoi_stop_input.isEnabled()
     assert window.marker_table.rowCount() == 1
@@ -134,6 +139,82 @@ def test_controls_panel_and_overlay_toggles(
     assert window.s21_marker_table.rowCount() == 1
     assert not window.marker_table.isHidden()
     assert not window.s21_marker_table.isHidden()
+
+    window.close()
+
+
+def test_view_and_trace_controls_drive_visibility_and_reference_state(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    first_file = _write_touchstone_file(tmp_path / "first_control.s1p")
+    second_file = _write_touchstone_file_with_content(
+        tmp_path / "second_control.s1p",
+        "# GHz S MA R 50\n"
+        "2.0 0.40 0\n"
+        "2.5 0.50 10\n"
+        "3.0 0.60 -20\n",
+    )
+
+    window = TouchstoneViewerWindow([first_file, second_file])
+
+    assert window.trace_visibility_list.count() == 2
+    assert window.reference_trace_combo.count() == 3
+    assert window.reference_trace_combo.minimumWidth() >= 300
+
+    window.frequency_unit_combo.setCurrentText("MHz")
+
+    assert window.frequency_scale.unit == "MHz"
+    assert window.marker_table.item(0, 1).text() == "2500.000000"
+    assert window.marker_frequency_input.value() == pytest.approx(2500.0)
+    assert window.s11_plot.getPlotItem().getAxis("bottom").labelText == "Frequency (MHz)"
+    assert window.s11_plot.getPlotItem().getAxis("bottom").labelUnits == ""
+
+    window.marker_frequency_input.setValue(2600.0)
+
+    assert window.marker_table.item(0, 1).text() == "2600.000000"
+    assert window.marker_line is not None
+    assert window.marker_line.value() == pytest.approx(2600.0)
+
+    window.marker_frequency_input.setValue(2500.0)
+
+    first_item = window.trace_visibility_list.item(0)
+    first_item.setCheckState(QtCore.Qt.CheckState.Unchecked)
+
+    assert window.summary_label.text() == "2 trace(s) loaded, 1 visible"
+    assert window.marker_table.rowCount() == 1
+    assert window.trace_visibility_list.item(0).checkState() == QtCore.Qt.CheckState.Unchecked
+
+    window.reference_trace_combo.setCurrentIndex(2)
+
+    assert window.reference_trace_path == second_file.resolve()
+    reference_rows = [
+        row
+        for row in range(window.marker_table.rowCount())
+        if window.marker_table.item(row, 0).text().endswith("(ref)")
+    ]
+    assert reference_rows == [0]
+    assert window.marker_table.item(reference_rows[0], 0).font().bold()
+    assert window.trace_visibility_list.item(1).font().bold()
+    assert window.marker_table.item(0, 3).text() == "+0.000"
+    assert window.marker_table.item(0, 5).text() == "+0.0000"
+
+    window.trace_visibility_list.item(0).setCheckState(QtCore.Qt.CheckState.Checked)
+
+    assert window.summary_label.text() == "2 trace(s) loaded, 2 visible"
+    assert window.marker_table.rowCount() == 2
+    assert window.marker_table.item(0, 3).text() == "-6.021"
+    assert window.marker_table.item(0, 5).text() == "-0.2500"
+    assert window.marker_table.item(1, 0).text().endswith("(ref)")
+    assert window.marker_table.item(1, 3).text() == "+0.000"
+    assert window.marker_table.item(1, 5).text() == "+0.0000"
+
+    window.marker_table.sortItems(4, QtCore.Qt.SortOrder.DescendingOrder)
+
+    assert window.marker_table.item(0, 4).text() == "0.5000"
+    assert window.marker_table.item(0, 0).font().bold()
+    assert window.marker_table.item(1, 4).text() == "0.2500"
 
     window.close()
 
