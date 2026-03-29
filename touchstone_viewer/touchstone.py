@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,7 @@ _FREQUENCY_UNITS = {
 }
 
 _SUPPORTED_DATA_FORMATS = {"RI", "MA", "DB"}
+_SUPPORTED_PORT_COUNTS = {1, 2}
 
 
 @dataclass(frozen=True)
@@ -29,12 +31,36 @@ class TouchstoneData:
     path: Path
     label: str
     frequencies_hz: NDArray[np.float64]
-    gamma: NDArray[np.complex128]
+    s_parameters: NDArray[np.complex128]
     reference_impedance_ohms: float
 
-    def s11_db(self) -> NDArray[np.float64]:
-        magnitude = np.maximum(np.abs(self.gamma), 1.0e-12)
+    @property
+    def port_count(self) -> int:
+        return int(self.s_parameters.shape[1])
+
+    @property
+    def gamma(self) -> NDArray[np.complex128]:
+        return self.parameter(1, 1)
+
+    def has_parameter(self, out_port: int, in_port: int) -> bool:
+        return 1 <= out_port <= self.port_count and 1 <= in_port <= self.port_count
+
+    def parameter(self, out_port: int, in_port: int) -> NDArray[np.complex128]:
+        if not self.has_parameter(out_port, in_port):
+            raise ValueError(
+                f"{self.label} does not contain S{out_port}{in_port} data"
+            )
+        return self.s_parameters[:, out_port - 1, in_port - 1]
+
+    def parameter_db(self, out_port: int, in_port: int) -> NDArray[np.float64]:
+        magnitude = np.maximum(np.abs(self.parameter(out_port, in_port)), 1.0e-12)
         return 20.0 * np.log10(magnitude)
+
+    def s11_db(self) -> NDArray[np.float64]:
+        return self.parameter_db(1, 1)
+
+    def s21_db(self) -> NDArray[np.float64]:
+        return self.parameter_db(2, 1)
 
     def impedance_ohms(self) -> NDArray[np.complex128]:
         denominator = 1.0 - self.gamma
@@ -53,13 +79,24 @@ class TouchstoneData:
         )
         return impedance
 
-    def interpolated_gamma(self, frequency_hz: float) -> complex | None:
+    def interpolated_parameter(
+        self,
+        out_port: int,
+        in_port: int,
+        frequency_hz: float,
+    ) -> complex | None:
+        if not self.has_parameter(out_port, in_port):
+            return None
         if frequency_hz < self.frequencies_hz[0] or frequency_hz > self.frequencies_hz[-1]:
             return None
 
-        real = np.interp(frequency_hz, self.frequencies_hz, self.gamma.real)
-        imag = np.interp(frequency_hz, self.frequencies_hz, self.gamma.imag)
+        parameter = self.parameter(out_port, in_port)
+        real = np.interp(frequency_hz, self.frequencies_hz, parameter.real)
+        imag = np.interp(frequency_hz, self.frequencies_hz, parameter.imag)
         return complex(real, imag)
+
+    def interpolated_gamma(self, frequency_hz: float) -> complex | None:
+        return self.interpolated_parameter(1, 1, frequency_hz)
 
 
 def load_touchstone(path: str | Path) -> TouchstoneData:
@@ -67,9 +104,14 @@ def load_touchstone(path: str | Path) -> TouchstoneData:
     if not file_path.exists():
         raise FileNotFoundError(f"Touchstone file not found: {file_path}")
 
+    port_count = _infer_port_count(file_path)
     options = TouchstoneOptions()
     frequencies_hz: list[float] = []
-    gamma_values: list[complex] = []
+    parameter_rows: list[NDArray[np.complex128]] = []
+
+    expected_row_tokens = 1 + 2 * port_count * port_count
+    pending_fields: list[str] = []
+    pending_line_number: int | None = None
 
     with file_path.open("r", encoding="utf-8", errors="replace") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
@@ -82,34 +124,49 @@ def load_touchstone(path: str | Path) -> TouchstoneData:
                 continue
 
             fields = line.split()
-            if len(fields) != 3:
-                raise ValueError(
-                    f"{file_path.name}:{line_number} is not valid 1-port Touchstone data: {raw_line.rstrip()}"
-                )
+            if not pending_fields:
+                pending_line_number = line_number
+            pending_fields.extend(fields)
 
-            frequency = _parse_float(fields[0]) * options.frequency_scale_hz
-            value_a = _parse_float(fields[1])
-            value_b = _parse_float(fields[2])
-            gamma = _convert_to_gamma(options.data_format, value_a, value_b)
+            while len(pending_fields) >= expected_row_tokens:
+                row_fields = pending_fields[:expected_row_tokens]
+                pending_fields = pending_fields[expected_row_tokens:]
 
-            frequencies_hz.append(frequency)
-            gamma_values.append(gamma)
+                frequency = _parse_float(row_fields[0]) * options.frequency_scale_hz
+                parameters = [
+                    _convert_to_gamma(
+                        options.data_format,
+                        _parse_float(row_fields[index]),
+                        _parse_float(row_fields[index + 1]),
+                    )
+                    for index in range(1, expected_row_tokens, 2)
+                ]
+
+                frequencies_hz.append(frequency)
+                parameter_rows.append(_reshape_parameter_row(parameters, port_count))
+                pending_line_number = line_number if pending_fields else None
+
+    if pending_fields:
+        line_number = pending_line_number or 1
+        raise ValueError(
+            f"{file_path.name}:{line_number} has incomplete Touchstone data for a {port_count}-port file"
+        )
 
     if not frequencies_hz:
         raise ValueError(f"{file_path.name} does not contain any data rows")
 
     frequencies = np.asarray(frequencies_hz, dtype=np.float64)
-    gamma = np.asarray(gamma_values, dtype=np.complex128)
+    s_parameters = np.asarray(parameter_rows, dtype=np.complex128)
 
     order = np.argsort(frequencies)
     frequencies = frequencies[order]
-    gamma = gamma[order]
+    s_parameters = s_parameters[order]
 
     return TouchstoneData(
         path=file_path,
         label=file_path.stem,
         frequencies_hz=frequencies,
-        gamma=gamma,
+        s_parameters=s_parameters,
         reference_impedance_ohms=options.reference_impedance_ohms,
     )
 
@@ -151,6 +208,34 @@ def _parse_options(line: str) -> TouchstoneOptions:
         data_format=data_format,
         reference_impedance_ohms=reference_impedance,
     )
+
+
+def _infer_port_count(path: Path) -> int:
+    match = re.search(r"\.s(\d+)p$", path.name, flags=re.IGNORECASE)
+    if not match:
+        raise ValueError(
+            f"{path.name} does not use a supported Touchstone extension like .s1p or .s2p"
+        )
+
+    port_count = int(match.group(1))
+    if port_count not in _SUPPORTED_PORT_COUNTS:
+        raise ValueError(
+            f"{path.name} uses {port_count} ports, but only .s1p and .s2p are supported"
+        )
+    return port_count
+
+
+def _reshape_parameter_row(
+    flat_parameters: list[complex],
+    port_count: int,
+) -> NDArray[np.complex128]:
+    matrix = np.empty((port_count, port_count), dtype=np.complex128)
+    index = 0
+    for in_port in range(port_count):
+        for out_port in range(port_count):
+            matrix[out_port, in_port] = flat_parameters[index]
+            index += 1
+    return matrix
 
 
 def _convert_to_gamma(data_format: str, value_a: float, value_b: float) -> complex:

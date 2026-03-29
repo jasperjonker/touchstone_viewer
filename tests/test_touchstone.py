@@ -39,6 +39,41 @@ def test_load_touchstone_db_format(tmp_path: Path) -> None:
     assert gamma_to_impedance(complex(0.0, 0.0), 50.0) == pytest.approx(50.0 + 0.0j)
 
 
+def test_load_touchstone_s2p_format_and_s21_access(tmp_path: Path) -> None:
+    file_path = tmp_path / "two-port.s2p"
+    file_path.write_text(
+        "# GHz S RI R 50\n"
+        "2.4 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8\n",
+        encoding="utf-8",
+    )
+
+    data = load_touchstone(file_path)
+
+    assert data.port_count == 2
+    assert data.parameter(1, 1)[0] == pytest.approx(complex(0.1, 0.2))
+    assert data.parameter(2, 1)[0] == pytest.approx(complex(0.3, 0.4))
+    assert data.parameter(1, 2)[0] == pytest.approx(complex(0.5, 0.6))
+    assert data.parameter(2, 2)[0] == pytest.approx(complex(0.7, 0.8))
+    assert data.has_parameter(2, 1)
+    assert data.interpolated_parameter(2, 1, 2.4e9) == pytest.approx(complex(0.3, 0.4))
+    assert data.s21_db()[0] == pytest.approx(20.0 * np.log10(abs(complex(0.3, 0.4))))
+
+
+def test_load_touchstone_s2p_supports_wrapped_rows(tmp_path: Path) -> None:
+    file_path = tmp_path / "wrapped.s2p"
+    file_path.write_text(
+        "# GHz S MA R 50\n"
+        "2.4 0.5 0 0.25 90\n"
+        "0.1 -90 0.75 180\n",
+        encoding="utf-8",
+    )
+
+    data = load_touchstone(file_path)
+
+    assert data.port_count == 2
+    assert data.parameter(2, 1)[0] == pytest.approx(0.25j)
+
+
 def test_load_touchstone_sorts_data_and_interpolates(tmp_path: Path) -> None:
     file_path = tmp_path / "ma.s1p"
     file_path.write_text(
@@ -62,7 +97,7 @@ def test_touchstone_impedance_helpers_handle_open_condition() -> None:
         path=Path("dummy.s1p"),
         label="dummy",
         frequencies_hz=np.array([1.0]),
-        gamma=np.array([1.0 + 0.0j]),
+        s_parameters=np.array([[[1.0 + 0.0j]]]),
         reference_impedance_ohms=50.0,
     )
 
@@ -78,6 +113,8 @@ def test_load_touchstone_rejects_invalid_input(tmp_path: Path) -> None:
     invalid_path.write_text("# GHz S XY R 50\n2.4 0.1 0.2\n", encoding="utf-8")
     empty_path = tmp_path / "empty.s1p"
     empty_path.write_text("! only comments\n", encoding="utf-8")
+    unsupported_path = tmp_path / "three-port.s3p"
+    unsupported_path.write_text("# GHz S RI R 50\n2.4 0.1 0.2\n", encoding="utf-8")
 
     with pytest.raises(FileNotFoundError):
         load_touchstone(missing_path)
@@ -87,3 +124,6 @@ def test_load_touchstone_rejects_invalid_input(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         load_touchstone(empty_path)
+
+    with pytest.raises(ValueError):
+        load_touchstone(unsupported_path)

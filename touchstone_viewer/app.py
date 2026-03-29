@@ -44,8 +44,10 @@ class LoadedTrace:
     color: str
     s11_curve: pg.PlotDataItem | None = None
     smith_curve: pg.PlotDataItem | None = None
+    s21_curve: pg.PlotDataItem | None = None
     s11_marker: pg.ScatterPlotItem | None = None
     smith_marker: pg.ScatterPlotItem | None = None
+    s21_marker: pg.ScatterPlotItem | None = None
 
 
 class TouchstoneViewerWindow(QtWidgets.QMainWindow):
@@ -60,7 +62,9 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.frequency_scale = FrequencyScale(1.0e6, "MHz")
         self.marker_frequency_hz: float | None = None
         self.marker_line: pg.InfiniteLine | None = None
+        self.s21_marker_line: pg.InfiniteLine | None = None
         self.marker_plot_label: pg.TextItem | None = None
+        self.s21_marker_plot_label: pg.TextItem | None = None
         self.aoi_region_hz: tuple[float, float] | None = None
         self.aoi_region_item: pg.LinearRegionItem | None = None
         self._updating_marker = False
@@ -91,21 +95,9 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         controls.addSpacing(12)
 
-        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
-
-        self.s11_plot = pg.PlotWidget()
-        self.s11_plot.scene().sigMouseClicked.connect(self._handle_plot_click)
-        self.s11_plot.getPlotItem().vb.sigRangeChanged.connect(
-            self._update_marker_plot_label_position
+        self.summary_label = QtWidgets.QLabel(
+            "Drop .s1p or .s2p files here or open them from the dialog."
         )
-        splitter.addWidget(self.s11_plot)
-
-        self.smith_plot = pg.PlotWidget()
-        splitter.addWidget(self.smith_plot)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-
-        self.summary_label = QtWidgets.QLabel("Drop .s1p files here or open them from the dialog.")
         controls.addWidget(self.summary_label, stretch=1)
 
         aoi_prefix = QtWidgets.QLabel("Area of Interest")
@@ -132,29 +124,82 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         layout.addLayout(controls)
 
-        layout.addWidget(splitter, stretch=1)
-
-        self.marker_table = QtWidgets.QTableWidget(0, 6)
-        self.marker_table.setHorizontalHeaderLabels(
-            ["Trace", "Freq", "S11 (dB)", "|Gamma|", "Angle (deg)", "Z (ohm)"]
-        )
-        self.marker_table.verticalHeader().setVisible(False)
-        self.marker_table.setAlternatingRowColors(True)
-        self.marker_table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.marker_table.setSelectionMode(
-            QtWidgets.QAbstractItemView.SelectionMode.NoSelection
-        )
-        self.marker_table.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-        self.marker_table.setMinimumHeight(210)
-
-        header = self.marker_table.horizontalHeader()
-        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
-        for column in range(1, self.marker_table.columnCount()):
-            header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
-
-        layout.addWidget(self.marker_table)
+        self.tab_widget = QtWidgets.QTabWidget()
+        self.tab_widget.addTab(self._build_s11_tab(), "S11")
+        self.tab_widget.addTab(self._build_s21_tab(), "S21")
+        layout.addWidget(self.tab_widget, stretch=1)
 
         self.setCentralWidget(central_widget)
+
+    def _build_s11_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+
+        self.s11_plot = pg.PlotWidget()
+        self.s11_plot.scene().sigMouseClicked.connect(
+            lambda event: self._handle_plot_click(self.s11_plot, event)
+        )
+        self.s11_plot.getPlotItem().vb.sigRangeChanged.connect(
+            self._update_marker_plot_label_position
+        )
+        splitter.addWidget(self.s11_plot)
+
+        self.smith_plot = pg.PlotWidget()
+        splitter.addWidget(self.smith_plot)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+
+        layout.addWidget(splitter, stretch=1)
+
+        self.marker_table = self._build_marker_table(
+            ["Trace", "Freq", "S11 (dB)", "|S11|", "Angle (deg)", "Z (ohm)"]
+        )
+        layout.addWidget(self.marker_table)
+
+        return tab
+
+    def _build_s21_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        self.s21_plot = pg.PlotWidget()
+        self.s21_plot.scene().sigMouseClicked.connect(
+            lambda event: self._handle_plot_click(self.s21_plot, event)
+        )
+        self.s21_plot.getPlotItem().vb.sigRangeChanged.connect(
+            self._update_s21_marker_plot_label_position
+        )
+        layout.addWidget(self.s21_plot, stretch=1)
+
+        self.s21_marker_table = self._build_marker_table(
+            ["Trace", "Freq", "S21 (dB)", "|S21|", "Angle (deg)"]
+        )
+        layout.addWidget(self.s21_marker_table)
+
+        return tab
+
+    def _build_marker_table(self, headers: list[str]) -> QtWidgets.QTableWidget:
+        table = QtWidgets.QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        table.setEditTriggers(QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionMode(QtWidgets.QAbstractItemView.SelectionMode.NoSelection)
+        table.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        table.setMinimumHeight(210)
+
+        header = table.horizontalHeader()
+        header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        for column in range(1, table.columnCount()):
+            header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+
+        return table
 
     def _build_aoi_spin_box(self) -> QtWidgets.QDoubleSpinBox:
         spin_box = QtWidgets.QDoubleSpinBox()
@@ -167,41 +212,19 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         spin_box.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
         return spin_box
 
-    def _configure_s11_plot(self) -> None:
-        plot_item = self.s11_plot.getPlotItem()
-        plot_item.setTitle("S11 Over Frequency")
-        plot_item.setLabel("left", "S11", units="dB")
-        plot_item.setLabel("bottom", "Frequency", units=self.frequency_scale.unit)
-        plot_item.showGrid(x=True, y=True, alpha=0.18)
-        plot_item.addLegend(labelTextColor="#24313f", brush="#ffffffdd")
-        self.s11_plot.setMouseEnabled(x=True, y=True)
-
-        self.marker_plot_label = pg.TextItem(
-            text="Marker: n/a",
-            color="#1e293b",
-            anchor=(1.0, 0.0),
-            border=pg.mkPen("#93c5fd", width=1.2),
-            fill=pg.mkBrush(255, 255, 255, 228),
-        )
-        self.marker_plot_label.setZValue(30)
-        self.s11_plot.addItem(self.marker_plot_label, ignoreBounds=True)
-        self._update_marker_plot_label_position()
-
-    def _configure_smith_plot(self) -> None:
-        plot_item = self.smith_plot.getPlotItem()
-        plot_item.setTitle("Smith Chart")
-        self.smith_plot.setMouseEnabled(x=False, y=False)
-        add_smith_grid(plot_item)
-
     def _refresh_plots(self) -> None:
         self._choose_frequency_scale()
 
         self.s11_plot.clear()
         self.smith_plot.clear()
+        self.s21_plot.clear()
         self.marker_plot_label = None
+        self.s21_marker_plot_label = None
         self.aoi_region_item = None
+
         self._configure_s11_plot()
         self._configure_smith_plot()
+        self._configure_s21_plot()
 
         if self.traces:
             self._add_aoi_region()
@@ -217,20 +240,71 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
             marker_pen = pg.mkPen("#475569", width=2, style=QtCore.Qt.PenStyle.DashLine)
             self.marker_line = pg.InfiniteLine(angle=90, movable=True, pen=marker_pen)
-            self.marker_line.sigPositionChanged.connect(self._handle_marker_moved)
+            self.marker_line.sigPositionChanged.connect(self._handle_s11_marker_moved)
             self.s11_plot.addItem(self.marker_line, ignoreBounds=True)
-            self._set_marker_line_value(self.marker_frequency_hz)
+
+            self.s21_marker_line = pg.InfiniteLine(angle=90, movable=True, pen=marker_pen)
+            self.s21_marker_line.sigPositionChanged.connect(self._handle_s21_marker_moved)
+            self.s21_plot.addItem(self.s21_marker_line, ignoreBounds=True)
+
+            self._set_marker_line_values(self.marker_frequency_hz)
             self._update_marker_outputs()
         else:
             self.marker_line = None
+            self.s21_marker_line = None
             self.marker_frequency_hz = None
             self.aoi_region_hz = None
             self._update_marker_table()
+            self._update_s21_marker_table()
             self._update_marker_plot_label()
+            self._update_s21_marker_plot_label()
             self._reset_aoi_controls()
             self._set_aoi_controls_enabled(False)
 
         self.summary_label.setText(f"{len(self.traces)} trace(s) loaded")
+
+    def _configure_s11_plot(self) -> None:
+        plot_item = self.s11_plot.getPlotItem()
+        plot_item.setTitle("S11 Over Frequency")
+        plot_item.setLabel("left", "S11", units="dB")
+        plot_item.setLabel("bottom", "Frequency", units=self.frequency_scale.unit)
+        plot_item.showGrid(x=True, y=True, alpha=0.18)
+        plot_item.addLegend(labelTextColor="#24313f", brush="#ffffffdd")
+        self.s11_plot.setMouseEnabled(x=True, y=True)
+
+        self.marker_plot_label = self._build_marker_plot_label()
+        self.s11_plot.addItem(self.marker_plot_label, ignoreBounds=True)
+        self._update_marker_plot_label_position()
+
+    def _configure_smith_plot(self) -> None:
+        plot_item = self.smith_plot.getPlotItem()
+        plot_item.setTitle("Smith Chart")
+        self.smith_plot.setMouseEnabled(x=False, y=False)
+        add_smith_grid(plot_item)
+
+    def _configure_s21_plot(self) -> None:
+        plot_item = self.s21_plot.getPlotItem()
+        plot_item.setTitle("S21 Over Frequency")
+        plot_item.setLabel("left", "S21", units="dB")
+        plot_item.setLabel("bottom", "Frequency", units=self.frequency_scale.unit)
+        plot_item.showGrid(x=True, y=True, alpha=0.18)
+        plot_item.addLegend(labelTextColor="#24313f", brush="#ffffffdd")
+        self.s21_plot.setMouseEnabled(x=True, y=True)
+
+        self.s21_marker_plot_label = self._build_marker_plot_label()
+        self.s21_plot.addItem(self.s21_marker_plot_label, ignoreBounds=True)
+        self._update_s21_marker_plot_label_position()
+
+    def _build_marker_plot_label(self) -> pg.TextItem:
+        label = pg.TextItem(
+            text="Marker: n/a",
+            color="#1e293b",
+            anchor=(1.0, 0.0),
+            border=pg.mkPen("#93c5fd", width=1.2),
+            fill=pg.mkBrush(255, 255, 255, 228),
+        )
+        label.setZValue(30)
+        return label
 
     def _choose_frequency_scale(self) -> None:
         if not self.traces:
@@ -263,19 +337,27 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             pen=pen,
         )
 
-        trace.s11_marker = pg.ScatterPlotItem(
-            size=10,
-            brush=pg.mkBrush(trace.color),
-            pen=pg.mkPen("#ffffff", width=1.5),
-        )
-        trace.smith_marker = pg.ScatterPlotItem(
-            size=11,
-            brush=pg.mkBrush(trace.color),
-            pen=pg.mkPen("#ffffff", width=1.5),
-        )
-
+        trace.s11_marker = self._build_marker_scatter(trace.color, size=10)
+        trace.smith_marker = self._build_marker_scatter(trace.color, size=11)
         self.s11_plot.addItem(trace.s11_marker)
         self.smith_plot.addItem(trace.smith_marker)
+
+        if trace.data.has_parameter(2, 1):
+            trace.s21_curve = self.s21_plot.plot(
+                scaled_frequency,
+                trace.data.s21_db(),
+                pen=pen,
+                name=trace.data.label,
+            )
+            trace.s21_marker = self._build_marker_scatter(trace.color, size=10)
+            self.s21_plot.addItem(trace.s21_marker)
+
+    def _build_marker_scatter(self, color: str, size: int) -> pg.ScatterPlotItem:
+        return pg.ScatterPlotItem(
+            size=size,
+            brush=pg.mkBrush(color),
+            pen=pg.mkPen("#ffffff", width=1.5),
+        )
 
     def _add_aoi_region(self) -> None:
         bounds_hz = self._frequency_span_hz()
@@ -352,7 +434,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             self,
             "Open Touchstone Files",
             str(self._default_browser_directory()),
-            "Touchstone files (*.s1p *.S1P);;All files (*.*)",
+            "Touchstone files (*.s1p *.S1P *.s2p *.S2P);;All files (*.*)",
         )
         if not selected:
             return
@@ -383,26 +465,35 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         first_trace = self.traces[0].data
         return 0.5 * (first_trace.frequencies_hz[0] + first_trace.frequencies_hz[-1])
 
-    def _handle_plot_click(self, event: object) -> None:
-        if not self.marker_line or not hasattr(event, "scenePos"):
+    def _handle_plot_click(self, plot_widget: pg.PlotWidget, event: object) -> None:
+        if not hasattr(event, "scenePos"):
             return
 
         scene_position = event.scenePos()
-        bounding_rect = self.s11_plot.getPlotItem().vb.sceneBoundingRect()
+        bounding_rect = plot_widget.getPlotItem().vb.sceneBoundingRect()
         if not bounding_rect.contains(scene_position):
             return
 
-        mouse_point = self.s11_plot.getPlotItem().vb.mapSceneToView(scene_position)
+        mouse_point = plot_widget.getPlotItem().vb.mapSceneToView(scene_position)
         frequency_hz = mouse_point.x() * self.frequency_scale.factor_hz
         self.marker_frequency_hz = frequency_hz
-        self._set_marker_line_value(frequency_hz)
+        self._set_marker_line_values(frequency_hz)
         self._update_marker_outputs()
 
-    def _handle_marker_moved(self) -> None:
+    def _handle_s11_marker_moved(self) -> None:
         if not self.marker_line or self._updating_marker:
             return
 
         self.marker_frequency_hz = self.marker_line.value() * self.frequency_scale.factor_hz
+        self._set_marker_line_values(self.marker_frequency_hz)
+        self._update_marker_outputs()
+
+    def _handle_s21_marker_moved(self) -> None:
+        if not self.s21_marker_line or self._updating_marker:
+            return
+
+        self.marker_frequency_hz = self.s21_marker_line.value() * self.frequency_scale.factor_hz
+        self._set_marker_line_values(self.marker_frequency_hz)
         self._update_marker_outputs()
 
     def _handle_aoi_value_changed(self, _value: float) -> None:
@@ -490,47 +581,74 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             ]
         )
 
-    def _set_marker_line_value(self, frequency_hz: float) -> None:
-        if not self.marker_line:
-            return
-
+    def _set_marker_line_values(self, frequency_hz: float) -> None:
         self._updating_marker = True
         try:
-            self.marker_line.setValue(frequency_hz / self.frequency_scale.factor_hz)
+            if self.marker_line is not None:
+                self.marker_line.setValue(frequency_hz / self.frequency_scale.factor_hz)
+            if self.s21_marker_line is not None:
+                self.s21_marker_line.setValue(frequency_hz / self.frequency_scale.factor_hz)
         finally:
             self._updating_marker = False
 
     def _update_marker_outputs(self) -> None:
-        if self.marker_frequency_hz is None:
-            self._update_marker_plot_label()
-            self._update_marker_table()
-            return
-
         self._update_marker_plot_label()
+        self._update_s21_marker_plot_label()
         self._update_marker_table()
+        self._update_s21_marker_table()
 
     def _update_marker_plot_label(self) -> None:
-        if self.marker_plot_label is None:
+        self._update_plot_marker_label(
+            self.marker_plot_label,
+            self.s11_plot,
+            self.marker_frequency_hz,
+            self._update_marker_plot_label_position,
+        )
+
+    def _update_s21_marker_plot_label(self) -> None:
+        self._update_plot_marker_label(
+            self.s21_marker_plot_label,
+            self.s21_plot,
+            self.marker_frequency_hz,
+            self._update_s21_marker_plot_label_position,
+        )
+
+    def _update_plot_marker_label(
+        self,
+        label: pg.TextItem | None,
+        _plot_widget: pg.PlotWidget,
+        frequency_hz: float | None,
+        position_callback: callable,
+    ) -> None:
+        if label is None:
             return
 
-        if self.marker_frequency_hz is None:
-            self.marker_plot_label.setText("Marker: n/a")
+        if frequency_hz is None:
+            label.setText("Marker: n/a")
         else:
-            display_frequency = self.marker_frequency_hz / self.frequency_scale.factor_hz
-            self.marker_plot_label.setText(
-                f"Marker: {display_frequency:.6f} {self.frequency_scale.unit}"
-            )
+            display_frequency = frequency_hz / self.frequency_scale.factor_hz
+            label.setText(f"Marker: {display_frequency:.6f} {self.frequency_scale.unit}")
 
-        self._update_marker_plot_label_position()
+        position_callback()
 
     def _update_marker_plot_label_position(self, *_args: object) -> None:
-        if self.marker_plot_label is None:
+        self._position_plot_label(self.marker_plot_label, self.s11_plot)
+
+    def _update_s21_marker_plot_label_position(self, *_args: object) -> None:
+        self._position_plot_label(self.s21_marker_plot_label, self.s21_plot)
+
+    def _position_plot_label(
+        self,
+        label: pg.TextItem | None,
+        plot_widget: pg.PlotWidget,
+    ) -> None:
+        if label is None:
             return
 
-        x_range, y_range = self.s11_plot.getPlotItem().viewRange()
+        x_range, y_range = plot_widget.getPlotItem().viewRange()
         x_margin = (x_range[1] - x_range[0]) * 0.02
         y_margin = (y_range[1] - y_range[0]) * 0.04
-        self.marker_plot_label.setPos(x_range[1] - x_margin, y_range[1] - y_margin)
+        label.setPos(x_range[1] - x_margin, y_range[1] - y_margin)
 
     def _preferred_aoi_span_hz(
         self, fallback_bounds_hz: tuple[float, float]
@@ -553,16 +671,13 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_table.setRowCount(len(self.traces))
 
         for row_index, trace in enumerate(self.traces):
-            color = QtGui.QColor(trace.color)
-            gamma = None
+            parameter = None
             if self.marker_frequency_hz is not None:
-                gamma = trace.data.interpolated_gamma(self.marker_frequency_hz)
+                parameter = trace.data.interpolated_parameter(1, 1, self.marker_frequency_hz)
 
-            if gamma is None:
-                if trace.s11_marker is not None:
-                    trace.s11_marker.setData([], [])
-                if trace.smith_marker is not None:
-                    trace.smith_marker.setData([], [])
+            if parameter is None:
+                self._set_scatter_point(trace.s11_marker, None)
+                self._set_scatter_point(trace.smith_marker, None)
                 values = [
                     trace.data.label,
                     "out of range",
@@ -573,29 +688,92 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                 ]
             else:
                 display_frequency = self.marker_frequency_hz / self.frequency_scale.factor_hz
-                s11_db = 20.0 * np.log10(max(abs(gamma), 1.0e-12))
-                impedance = gamma_to_impedance(gamma, trace.data.reference_impedance_ohms)
-
-                if trace.s11_marker is not None:
-                    trace.s11_marker.setData([display_frequency], [s11_db])
-                if trace.smith_marker is not None:
-                    trace.smith_marker.setData([gamma.real], [gamma.imag])
-
+                s11_db = _parameter_db(parameter)
+                impedance = gamma_to_impedance(parameter, trace.data.reference_impedance_ohms)
+                self._set_scatter_point(trace.s11_marker, (display_frequency, s11_db))
+                self._set_scatter_point(trace.smith_marker, (parameter.real, parameter.imag))
                 values = [
                     trace.data.label,
                     f"{display_frequency:.6f}",
                     f"{s11_db:.3f}",
-                    f"{abs(gamma):.4f}",
-                    f"{np.degrees(np.angle(gamma)):.2f}",
+                    f"{abs(parameter):.4f}",
+                    f"{np.degrees(np.angle(parameter)):.2f}",
                     _format_impedance(impedance),
                 ]
 
-            for column, value in enumerate(values):
-                item = QtWidgets.QTableWidgetItem(value)
-                item.setForeground(QtGui.QBrush(color))
-                self.marker_table.setItem(row_index, column, item)
+            self._set_table_row(self.marker_table, row_index, trace.color, values)
 
         self.marker_table.resizeRowsToContents()
+
+    def _update_s21_marker_table(self) -> None:
+        self.s21_marker_table.setRowCount(len(self.traces))
+
+        for row_index, trace in enumerate(self.traces):
+            if not trace.data.has_parameter(2, 1):
+                self._set_scatter_point(trace.s21_marker, None)
+                values = [
+                    trace.data.label,
+                    "not available",
+                    "not available",
+                    "not available",
+                    "not available",
+                ]
+                self._set_table_row(self.s21_marker_table, row_index, trace.color, values)
+                continue
+
+            parameter = None
+            if self.marker_frequency_hz is not None:
+                parameter = trace.data.interpolated_parameter(2, 1, self.marker_frequency_hz)
+
+            if parameter is None:
+                self._set_scatter_point(trace.s21_marker, None)
+                values = [
+                    trace.data.label,
+                    "out of range",
+                    "out of range",
+                    "out of range",
+                    "out of range",
+                ]
+            else:
+                display_frequency = self.marker_frequency_hz / self.frequency_scale.factor_hz
+                s21_db = _parameter_db(parameter)
+                self._set_scatter_point(trace.s21_marker, (display_frequency, s21_db))
+                values = [
+                    trace.data.label,
+                    f"{display_frequency:.6f}",
+                    f"{s21_db:.3f}",
+                    f"{abs(parameter):.4f}",
+                    f"{np.degrees(np.angle(parameter)):.2f}",
+                ]
+
+            self._set_table_row(self.s21_marker_table, row_index, trace.color, values)
+
+        self.s21_marker_table.resizeRowsToContents()
+
+    def _set_scatter_point(
+        self,
+        scatter: pg.ScatterPlotItem | None,
+        point: tuple[float, float] | None,
+    ) -> None:
+        if scatter is None:
+            return
+        if point is None:
+            scatter.setData([], [])
+            return
+        scatter.setData([point[0]], [point[1]])
+
+    def _set_table_row(
+        self,
+        table: QtWidgets.QTableWidget,
+        row_index: int,
+        color_hex: str,
+        values: list[str],
+    ) -> None:
+        color = QtGui.QColor(color_hex)
+        for column, value in enumerate(values):
+            item = QtWidgets.QTableWidgetItem(value)
+            item.setForeground(QtGui.QBrush(color))
+            table.setItem(row_index, column, item)
 
     def dragEnterEvent(self, event: QtGui.QDragEnterEvent) -> None:
         if any(url.isLocalFile() for url in event.mimeData().urls()):
@@ -604,16 +782,16 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         event.ignore()
 
     def dropEvent(self, event: QtGui.QDropEvent) -> None:
-        paths = [
-            Path(url.toLocalFile())
-            for url in event.mimeData().urls()
-            if url.isLocalFile()
-        ]
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
         if paths:
             self.load_files(paths)
             event.acceptProposedAction()
             return
         event.ignore()
+
+
+def _parameter_db(parameter: complex) -> float:
+    return 20.0 * np.log10(max(abs(parameter), 1.0e-12))
 
 
 def _format_impedance(value: complex) -> str:
@@ -672,9 +850,14 @@ def _resolve_browser_directory(
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Interactive S11 and Smith chart viewer for Touchstone .s1p files."
+        description="Interactive S11 and S21 viewer for Touchstone .s1p and .s2p files."
     )
-    parser.add_argument("files", nargs="*", type=Path, help="Touchstone .s1p files to open")
+    parser.add_argument(
+        "files",
+        nargs="*",
+        type=Path,
+        help="Touchstone .s1p or .s2p files to open",
+    )
     return parser
 
 

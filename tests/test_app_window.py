@@ -53,6 +53,16 @@ def _write_touchstone_file(path: Path) -> Path:
     return path
 
 
+def _write_touchstone_two_port_file(path: Path) -> Path:
+    path.write_text(
+        "# GHz S RI R 50\n"
+        "2.0 0.10 0.00 0.60 0.00 0.05 0.00 0.20 0.00\n"
+        "2.5 0.20 0.10 0.50 -0.10 0.10 0.05 0.30 0.10\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_window_initial_load_builds_plots(
     qapp: QtWidgets.QApplication,
     isolated_qsettings: None,
@@ -69,6 +79,7 @@ def test_window_initial_load_builds_plots(
     assert window.aoi_start_input.isEnabled()
     assert window.aoi_stop_input.isEnabled()
     assert window.marker_table.rowCount() == 1
+    assert window.tab_widget.count() == 2
 
     window.close()
 
@@ -169,5 +180,23 @@ def test_drop_event_loads_files(
 
     assert event.accepted
     assert len(window.traces) == 1
+
+    window.close()
+
+
+def test_s2p_load_populates_s21_tab(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_two_port_file(tmp_path / "amp.s2p")
+
+    window = TouchstoneViewerWindow([file_path])
+
+    assert len(window.traces) == 1
+    assert window.traces[0].s21_curve is not None
+    assert window.s21_marker_line is not None
+    assert window.s21_marker_table.rowCount() == 1
+    assert window.s21_marker_table.item(0, 2).text() != "not available"
 
     window.close()
