@@ -571,6 +571,31 @@ def test_load_files_reports_errors_and_skips_duplicates(
     window.close()
 
 
+def test_marker_table_can_be_exported_to_csv(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "exportable.s1p")
+    export_path = tmp_path / "marker_table.csv"
+
+    def fake_get_save_file_name(*args):
+        return (str(export_path), "CSV files (*.csv)")
+
+    monkeypatch.setattr(QtWidgets.QFileDialog, "getSaveFileName", fake_get_save_file_name)
+
+    window = TouchstoneViewerWindow([file_path])
+    window._export_table_to_csv(window.marker_table, suggested_name="s11_marker_table.csv")
+
+    assert export_path.read_text(encoding="utf-8").splitlines() == [
+        "Trace,Freq,S11 (dB),ΔRef (dB),|S11| (lin),ΔRef |S11| (lin),Angle (deg),Z (ohm)",
+        "exportable,2.500000,-12.041,-,0.2500,-,10.00,82.22 + j7.61",
+    ]
+
+    window.close()
+
+
 def test_aoi_controls_update_region_and_clear_resets_state(
     qapp: QtWidgets.QApplication,
     isolated_qsettings: None,

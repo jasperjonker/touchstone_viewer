@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -751,6 +752,15 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                 "Z (ohm)",
             ]
         )
+        layout.addLayout(
+            self._build_table_actions_row(
+                "Marker Table",
+                lambda: self._export_table_to_csv(
+                    self.marker_table,
+                    suggested_name="s11_marker_table.csv",
+                ),
+            )
+        )
         layout.addWidget(self.marker_table)
 
         return tab
@@ -780,6 +790,15 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                 "ΔRef |S21| (lin)",
                 "Angle (deg)",
             ]
+        )
+        layout.addLayout(
+            self._build_table_actions_row(
+                "Marker Table",
+                lambda: self._export_table_to_csv(
+                    self.s21_marker_table,
+                    suggested_name="s21_marker_table.csv",
+                ),
+            )
         )
         layout.addWidget(self.s21_marker_table)
 
@@ -1043,6 +1062,24 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         table.setSortingEnabled(True)
         return table
+
+    def _build_table_actions_row(
+        self,
+        title: str,
+        export_callback: callable,
+    ) -> QtWidgets.QHBoxLayout:
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(8)
+        title_label = QtWidgets.QLabel(title)
+        font = title_label.font()
+        font.setBold(True)
+        title_label.setFont(font)
+        row.addWidget(title_label)
+        row.addStretch(1)
+        export_button = QtWidgets.QPushButton("Export CSV")
+        export_button.clicked.connect(export_callback)
+        row.addWidget(export_button)
+        return row
 
     def _build_aoi_spin_box(self) -> QtWidgets.QDoubleSpinBox:
         spin_box = QtWidgets.QDoubleSpinBox()
@@ -1610,6 +1647,54 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         if not selected:
             return
         self.load_files([Path(path) for path in selected])
+
+    def _export_table_to_csv(
+        self,
+        table: QtWidgets.QTableWidget,
+        *,
+        suggested_name: str,
+    ) -> None:
+        selected, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Export Table to CSV",
+            str(self._default_browser_directory() / suggested_name),
+            "CSV files (*.csv);;All files (*.*)",
+        )
+        if not selected:
+            return
+        self._write_table_to_csv(table, Path(selected))
+
+    def _write_table_to_csv(
+        self,
+        table: QtWidgets.QTableWidget,
+        path: Path,
+    ) -> None:
+        try:
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(
+                    [
+                        table.horizontalHeaderItem(column).text()
+                        if table.horizontalHeaderItem(column) is not None
+                        else ""
+                        for column in range(table.columnCount())
+                    ]
+                )
+                for row in range(table.rowCount()):
+                    writer.writerow(
+                        [
+                            table.item(row, column).text()
+                            if table.item(row, column) is not None
+                            else ""
+                            for column in range(table.columnCount())
+                        ]
+                    )
+        except OSError as exc:  # pragma: no cover - UI error path
+            QtWidgets.QMessageBox.warning(
+                self,
+                "CSV Export Failed",
+                f"{path.name}: {exc}",
+            )
 
     def _default_browser_directory(self) -> Path:
         saved_directory = self.settings.value(LAST_OPEN_DIRECTORY_KEY, None, type=str)
