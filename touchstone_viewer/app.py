@@ -345,8 +345,8 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        top_row = QtWidgets.QHBoxLayout()
-        top_row.setSpacing(10)
+        primary_controls_row = QtWidgets.QHBoxLayout()
+        primary_controls_row.setSpacing(10)
 
         view_section = QtWidgets.QWidget()
         view_layout = QtWidgets.QHBoxLayout(view_section)
@@ -421,10 +421,10 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.aoi_preset_bands_button.setMenu(self.aoi_preset_bands_menu)
         aoi_layout.addWidget(self.aoi_preset_bands_button)
 
-        top_row.addWidget(view_section)
-        top_row.addWidget(self._build_panel_separator())
-        top_row.addWidget(aoi_section)
-        top_row.addWidget(self._build_panel_separator())
+        primary_controls_row.addWidget(view_section)
+        primary_controls_row.addWidget(self._build_panel_separator())
+        primary_controls_row.addWidget(aoi_section)
+        primary_controls_row.addStretch(1)
 
         threshold_section = QtWidgets.QWidget()
         threshold_layout = QtWidgets.QHBoxLayout(threshold_section)
@@ -451,8 +451,10 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.threshold_input.setEnabled(self.user_config.threshold_visible)
         threshold_layout.addWidget(self.threshold_input)
 
-        top_row.addWidget(threshold_section)
-        top_row.addWidget(self._build_panel_separator())
+        secondary_controls_row = QtWidgets.QHBoxLayout()
+        secondary_controls_row.setSpacing(10)
+        secondary_controls_row.addWidget(threshold_section)
+        secondary_controls_row.addWidget(self._build_panel_separator())
 
         marker_section = QtWidgets.QWidget()
         marker_layout = QtWidgets.QHBoxLayout(marker_section)
@@ -484,9 +486,10 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_frequency_unit_label = QtWidgets.QLabel(self.frequency_scale.unit)
         marker_layout.addWidget(self.marker_frequency_unit_label)
 
-        top_row.addWidget(marker_section)
-        top_row.addStretch(1)
-        layout.addLayout(top_row)
+        secondary_controls_row.addWidget(marker_section)
+        secondary_controls_row.addStretch(1)
+        layout.addLayout(primary_controls_row)
+        layout.addLayout(secondary_controls_row)
 
         traces_section = QtWidgets.QWidget()
         traces_layout = QtWidgets.QVBoxLayout(traces_section)

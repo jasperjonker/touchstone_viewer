@@ -1048,6 +1048,77 @@ def test_custom_band_is_included_with_visible_preset_bands(
     window.close()
 
 
+def test_controls_panel_does_not_force_window_wider_for_multiple_aoi_bands(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file_with_content(
+        tmp_path / "responsive_controls_panel.s1p",
+        "# GHz S DB R 50\n"
+        "2.0 -10 0\n"
+        "2.2 -15 0\n"
+        "2.4 -20 0\n"
+        "2.6 -25 0\n"
+        "2.8 -30 0\n",
+    )
+    preset_names = iter([("GNSS L1", True), ("GNSS L5", True), ("Galileo E1", True)])
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: next(preset_names),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.controls_toggle_button.setChecked(True)
+    window.resize(1200, 900)
+    window.show()
+    qapp.processEvents()
+
+    assert window.width() == 1200
+
+    window.aoi_enabled_checkbox.setChecked(True)
+    window.aoi_start_input.setValue(2.1)
+    window.aoi_stop_input.setValue(2.2)
+    window.save_aoi_preset_button.click()
+    window.aoi_start_input.setValue(2.3)
+    window.aoi_stop_input.setValue(2.4)
+    window.save_aoi_preset_button.click()
+    window.aoi_start_input.setValue(2.5)
+    window.aoi_stop_input.setValue(2.6)
+    window.save_aoi_preset_button.click()
+
+    window.aoi_preset_combo.setCurrentText("Custom")
+    window.aoi_start_input.setValue(2.2)
+    window.aoi_stop_input.setValue(2.7)
+
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["GNSS L1"].setChecked(True)
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["GNSS L5"].setChecked(True)
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["Galileo E1"].setChecked(True)
+    qapp.processEvents()
+
+    assert window.width() == 1200
+    assert window.minimumSizeHint().width() <= 1200
+
+    window.close()
+
+
 def test_multiple_aoi_preset_bands_can_be_shown_at_once(
     monkeypatch,
     qapp: QtWidgets.QApplication,
