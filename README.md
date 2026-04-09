@@ -25,8 +25,8 @@ It is designed for quick antenna and matching-network inspection with:
 - Inspect a specific frequency using the movable marker.
 - Open the `Controls` panel when you want to adjust overlays instead of keeping those inputs on screen all the time.
 - Override the plotted frequency unit with `Hz`, `kHz`, `MHz`, or `GHz`.
-- Force a light application theme from the `View` controls when the OS palette is too dark.
-- Define an area of interest with start/stop fields and a shared frequency unit selector.
+- Force a light application theme from the top-right header when the OS palette is too dark.
+- Define an area of interest with start/stop fields that follow the current `Freq` unit.
 - Toggle the area-of-interest band on or off without losing its saved frequency range.
 - Show AOI area directly in the `S11` marker table as an extra column.
 - Save named AOI presets such as `GNSS L1` or `GNSS L5`, including the marker frequency, and reapply them quickly.
@@ -125,13 +125,13 @@ The project currently enforces a minimum total coverage of `80%`.
 - Drag the vertical marker on the `S11` or `S21` plot, or click on either plot, to update the marker position.
 - Use `Marker` -> `At` to type an exact marker frequency in the current plot unit.
 - Use `Area of Interest` -> `Show` to enable or hide the shaded S11 band.
-- Enter the area-of-interest start and stop values, then choose `kHz`, `MHz`, or `GHz`.
+- Enter the area-of-interest start and stop values in the same unit selected by `View` -> `Freq`.
 - Use the AOI `Preset` combo plus `Save`/`Delete` to manage named AOI ranges and marker positions.
 - The `S11` marker table includes an `AOI Area` column that integrates `|S11 (dB)|` across the selected AOI.
 - Use `Threshold` -> `Show` to enable the horizontal reference line on both plots.
 - Adjust the `Threshold` value to move that line, for example `10 dB` to show the `-10 dB` reference.
 - Use `Marker` -> `Show` to enable or hide the vertical marker lines and marker tables.
-- Use `View` -> `Theme` -> `Light` to force the UI into a light palette; leave it unchecked to follow the default system look.
+- Use the top-right `Force Light Theme` toggle to force the UI into a light palette; leave it unchecked to follow the default system look.
 - Click any marker-table column header to sort by that column.
 - Use the `Traces` list to hide or show individual files without removing them from the session.
 - Use `Compare To` to select the baseline used for delta values in the marker tables and the highlighted reference line.

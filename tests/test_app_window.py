@@ -196,10 +196,15 @@ def test_view_and_trace_controls_drive_visibility_and_reference_state(
     assert window.trace_visibility_list.count() == 2
     assert window.reference_trace_combo.count() == 3
     assert window.reference_trace_combo.minimumWidth() >= 300
+    assert window.marker_frequency_input.suffix() == ""
+    assert window.marker_frequency_unit_label.text() == "GHz"
+    assert window.aoi_display_unit_label.text() == "GHz"
 
     window.frequency_unit_combo.setCurrentText("MHz")
 
     assert window.frequency_scale.unit == "MHz"
+    assert window.marker_frequency_unit_label.text() == "MHz"
+    assert window.aoi_display_unit_label.text() == "MHz"
     assert window.marker_table.item(0, 1).text() == "2500.000000"
     assert window.marker_frequency_input.value() == pytest.approx(2500.0)
     assert window.s11_plot.getPlotItem().getAxis("bottom").labelText == "Frequency (MHz)"
@@ -281,6 +286,28 @@ def test_loaded_traces_are_sorted_naturally_in_controls(
         "trace_2",
         "trace_10",
     ]
+
+    window.close()
+
+
+def test_marker_frequency_input_selects_all_on_focus(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "marker_focus.s1p")
+
+    window = TouchstoneViewerWindow([file_path])
+    focus_event = QtGui.QFocusEvent(
+        QtCore.QEvent.Type.FocusIn,
+        QtCore.Qt.FocusReason.TabFocusReason,
+    )
+    QtWidgets.QApplication.sendEvent(window.marker_frequency_input, focus_event)
+    qapp.processEvents()
+
+    line_edit = window.marker_frequency_input.lineEdit()
+    assert line_edit is not None
+    assert line_edit.selectedText() == window.marker_frequency_input.text()
 
     window.close()
 
@@ -415,7 +442,6 @@ def test_frequency_unit_change_preserves_view_marker_and_aoi(
     window.s11_plot.getPlotItem().setXRange(2.2, 2.4, padding=0.0)
     window.s11_plot.getPlotItem().setYRange(-18.0, -4.0, padding=0.0)
     window.marker_frequency_input.setValue(2.3)
-    window.aoi_unit_combo.setCurrentText("GHz")
     window.aoi_start_input.setValue(2.15)
     window.aoi_stop_input.setValue(2.45)
 
@@ -426,6 +452,9 @@ def test_frequency_unit_change_preserves_view_marker_and_aoi(
     assert window.marker_line is not None
     assert window.marker_line.value() == pytest.approx(2300.0)
     assert window.aoi_region_hz == pytest.approx((2.15e9, 2.45e9))
+    assert window.aoi_start_input.value() == pytest.approx(2150.0)
+    assert window.aoi_stop_input.value() == pytest.approx(2450.0)
+    assert window.aoi_display_unit_label.text() == "MHz"
     assert window.s11_plot.getPlotItem().viewRange()[0] == pytest.approx([2200.0, 2400.0])
     assert window.s11_plot.getPlotItem().viewRange()[1] == pytest.approx([-18.0, -4.0])
 
@@ -446,7 +475,6 @@ def test_s11_table_shows_aoi_area_as_an_extra_column(
     )
 
     window = TouchstoneViewerWindow([file_path])
-    window.aoi_unit_combo.setCurrentText("GHz")
     window.aoi_start_input.setValue(2.0)
     window.aoi_stop_input.setValue(3.0)
 
@@ -658,9 +686,8 @@ def test_common_settings_are_persisted_in_yaml_config(
     config_path = Path(os.environ["XDG_CONFIG_HOME"]) / "touchstone_viewer" / "config.yaml"
 
     window = TouchstoneViewerWindow([file_path])
-    window.light_mode_checkbox.setChecked(True)
+    window.force_light_theme_checkbox.setChecked(True)
     window.frequency_unit_combo.setCurrentText("MHz")
-    window.aoi_unit_combo.setCurrentText("MHz")
     window.aoi_start_input.setValue(2400.0)
     window.aoi_stop_input.setValue(2500.0)
     window.marker_frequency_input.setValue(2450.0)
@@ -678,9 +705,9 @@ def test_common_settings_are_persisted_in_yaml_config(
 
     restored_window = TouchstoneViewerWindow([file_path])
 
-    assert restored_window.light_mode_checkbox.isChecked()
+    assert restored_window.force_light_theme_checkbox.isChecked()
     assert restored_window.frequency_unit_combo.currentText() == "MHz"
-    assert restored_window.aoi_unit_combo.currentText() == "MHz"
+    assert restored_window.aoi_display_unit_label.text() == "MHz"
     assert restored_window.aoi_start_input.value() == pytest.approx(2400.0)
     assert restored_window.aoi_stop_input.value() == pytest.approx(2500.0)
     assert restored_window.marker_frequency_input.value() == pytest.approx(2450.0)
@@ -698,12 +725,12 @@ def test_light_mode_toggle_applies_and_restores_palette(
     file_path = _write_touchstone_file(tmp_path / "light_mode.s1p")
     window = TouchstoneViewerWindow([file_path])
     original_window_color = qapp.palette().color(QtGui.QPalette.ColorRole.Window).name()
-    window.light_mode_checkbox.setChecked(True)
+    window.force_light_theme_checkbox.setChecked(True)
 
     assert qapp.palette().color(QtGui.QPalette.ColorRole.Window).name() == "#f8fafc"
     assert window.palette().color(QtGui.QPalette.ColorRole.Window).name() == "#f8fafc"
 
-    window.light_mode_checkbox.setChecked(False)
+    window.force_light_theme_checkbox.setChecked(False)
 
     assert qapp.palette().color(QtGui.QPalette.ColorRole.Window).name() == original_window_color
 
@@ -727,7 +754,6 @@ def test_aoi_presets_can_be_saved_and_reused(
 
     window = TouchstoneViewerWindow([file_path])
     window.frequency_unit_combo.setCurrentText("MHz")
-    window.aoi_unit_combo.setCurrentText("MHz")
     window.aoi_start_input.setValue(2400.0)
     window.aoi_stop_input.setValue(2500.0)
     window.marker_frequency_input.setValue(2450.0)
@@ -773,7 +799,6 @@ def test_aoi_controls_update_region_and_clear_resets_state(
     file_path = _write_touchstone_file(tmp_path / "third.s1p")
 
     window = TouchstoneViewerWindow([file_path])
-    window.aoi_unit_combo.setCurrentText("GHz")
     window.aoi_start_input.setValue(2.1)
     window.aoi_stop_input.setValue(2.7)
 
@@ -797,7 +822,6 @@ def test_aoi_inputs_collapse_to_the_edited_bound_when_crossed(
     file_path = _write_touchstone_file(tmp_path / "aoi_crossing.s1p")
 
     window = TouchstoneViewerWindow([file_path])
-    window.aoi_unit_combo.setCurrentText("GHz")
     window.aoi_start_input.setValue(2.1)
     window.aoi_stop_input.setValue(2.7)
 

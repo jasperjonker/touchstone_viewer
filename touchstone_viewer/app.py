@@ -167,6 +167,30 @@ class _SortableTableWidgetItem(QtWidgets.QTableWidgetItem):
         return self.text() < other.text()
 
 
+class _SelectAllDoubleSpinBox(QtWidgets.QDoubleSpinBox):
+    def focusInEvent(self, event: QtGui.QFocusEvent) -> None:
+        super().focusInEvent(event)
+        QtCore.QTimer.singleShot(0, self._select_editor_text)
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        should_select = (
+            not self.hasFocus() and event.button() == QtCore.Qt.MouseButton.LeftButton
+        )
+        super().mousePressEvent(event)
+        if should_select:
+            QtCore.QTimer.singleShot(0, self._select_editor_text)
+
+    def mouseDoubleClickEvent(self, event: QtGui.QMouseEvent) -> None:
+        super().mouseDoubleClickEvent(event)
+        if event.button() == QtCore.Qt.MouseButton.LeftButton:
+            QtCore.QTimer.singleShot(0, self._select_editor_text)
+
+    def _select_editor_text(self) -> None:
+        line_edit = self.lineEdit()
+        if line_edit is not None:
+            line_edit.selectAll()
+
+
 class TouchstoneViewerWindow(QtWidgets.QMainWindow):
     def __init__(self, initial_paths: Sequence[Path]) -> None:
         super().__init__()
@@ -225,7 +249,6 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             if self.user_config.selected_aoi_preset in self._aoi_presets
             else None
         )
-        self._default_aoi_unit = self.user_config.aoi_unit
         self._config_save_timer = QtCore.QTimer(self)
         self._config_save_timer.setSingleShot(True)
         self._config_save_timer.setInterval(CONFIG_SAVE_DELAY_MS)
@@ -265,6 +288,11 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             "Drop .s1p or .s2p files here or open them from the dialog."
         )
         header.addWidget(self.summary_label, stretch=1)
+
+        self.force_light_theme_checkbox = QtWidgets.QCheckBox("Force Light Theme")
+        self.force_light_theme_checkbox.setChecked(self.force_light_mode)
+        self.force_light_theme_checkbox.toggled.connect(self._handle_light_mode_toggled)
+        header.addWidget(self.force_light_theme_checkbox)
 
         self.controls_toggle_button = QtWidgets.QToolButton()
         self.controls_toggle_button.setText("Controls")
@@ -314,14 +342,6 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         view_prefix = QtWidgets.QLabel("View")
         view_layout.addWidget(view_prefix)
 
-        theme_prefix = QtWidgets.QLabel("Theme")
-        view_layout.addWidget(theme_prefix)
-
-        self.light_mode_checkbox = QtWidgets.QCheckBox("Light")
-        self.light_mode_checkbox.setChecked(self.force_light_mode)
-        self.light_mode_checkbox.toggled.connect(self._handle_light_mode_toggled)
-        view_layout.addWidget(self.light_mode_checkbox)
-
         frequency_unit_prefix = QtWidgets.QLabel("Freq")
         view_layout.addWidget(frequency_unit_prefix)
 
@@ -356,11 +376,8 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.aoi_stop_input.valueChanged.connect(self._handle_aoi_value_changed)
         aoi_layout.addWidget(self.aoi_stop_input)
 
-        self.aoi_unit_combo = QtWidgets.QComboBox()
-        self.aoi_unit_combo.addItems(AOI_UNIT_FACTORS_HZ.keys())
-        self.aoi_unit_combo.setCurrentText(self._default_aoi_unit)
-        self.aoi_unit_combo.currentTextChanged.connect(self._handle_aoi_unit_changed)
-        aoi_layout.addWidget(self.aoi_unit_combo)
+        self.aoi_display_unit_label = QtWidgets.QLabel(self.frequency_scale.unit)
+        aoi_layout.addWidget(self.aoi_display_unit_label)
 
         preset_prefix = QtWidgets.QLabel("Preset")
         aoi_layout.addWidget(preset_prefix)
@@ -427,7 +444,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         marker_at_label = QtWidgets.QLabel("At")
         marker_layout.addWidget(marker_at_label)
 
-        self.marker_frequency_input = QtWidgets.QDoubleSpinBox()
+        self.marker_frequency_input = _SelectAllDoubleSpinBox()
         self.marker_frequency_input.setDecimals(6)
         self.marker_frequency_input.setMinimumWidth(120)
         self.marker_frequency_input.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
@@ -437,6 +454,9 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         )
         self.marker_frequency_input.valueChanged.connect(self._handle_marker_frequency_changed)
         marker_layout.addWidget(self.marker_frequency_input)
+
+        self.marker_frequency_unit_label = QtWidgets.QLabel(self.frequency_scale.unit)
+        marker_layout.addWidget(self.marker_frequency_unit_label)
 
         top_row.addWidget(marker_section)
         top_row.addStretch(1)
@@ -1137,7 +1157,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         return table
 
     def _s11_marker_table_headers(self) -> list[str]:
-        unit = self.aoi_unit_combo.currentText()
+        unit = self.frequency_scale.unit
         return [
             "Trace",
             "Freq",
@@ -1169,7 +1189,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         return row
 
     def _build_aoi_spin_box(self) -> QtWidgets.QDoubleSpinBox:
-        spin_box = QtWidgets.QDoubleSpinBox()
+        spin_box = _SelectAllDoubleSpinBox()
         spin_box.setDecimals(6)
         spin_box.setRange(0.0, 0.0)
         spin_box.setValue(0.0)
@@ -1192,7 +1212,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             aoi_visible=self.aoi_enabled_checkbox.isChecked(),
             aoi_start_hz=aoi_start_hz,
             aoi_stop_hz=aoi_stop_hz,
-            aoi_unit=self.aoi_unit_combo.currentText(),
+            aoi_unit=self.frequency_scale.unit,
             marker_visible=self.marker_enabled_checkbox.isChecked(),
             marker_frequency_hz=self.marker_frequency_hz,
             threshold_visible=self.threshold_enabled_checkbox.isChecked(),
@@ -1235,11 +1255,6 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             return
 
         self._selected_aoi_preset_name = preset_name
-        self._updating_aoi_controls = True
-        try:
-            self.aoi_unit_combo.setCurrentText(preset.unit)
-        finally:
-            self._updating_aoi_controls = False
         self.aoi_region_hz = _sorted_frequency_region_hz((preset.start_hz, preset.stop_hz))
         if preset.marker_frequency_hz is not None:
             self.marker_frequency_hz = preset.marker_frequency_hz
@@ -1284,7 +1299,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self._aoi_presets[preset_name] = AoiPreset(
             start_hz=start_hz,
             stop_hz=stop_hz,
-            unit=self.aoi_unit_combo.currentText(),
+            unit=self.frequency_scale.unit,
             marker_frequency_hz=self.marker_frequency_hz,
         )
         self._selected_aoi_preset_name = preset_name
@@ -2005,19 +2020,6 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self._update_marker_table()
         self._schedule_user_config_save()
 
-    def _handle_aoi_unit_changed(self, _unit: str) -> None:
-        if self._updating_aoi_controls:
-            return
-
-        if self._visible_traces():
-            self._sync_aoi_controls_to_region()
-        else:
-            self._reset_aoi_controls()
-        self._selected_aoi_preset_name = None
-        self._sync_aoi_preset_controls()
-        self._update_marker_table()
-        self._schedule_user_config_save()
-
     def _handle_frequency_unit_changed(self, unit: str) -> None:
         view_state = self._capture_view_state()
         self.frequency_unit_mode = unit
@@ -2026,6 +2028,9 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
     def _handle_light_mode_toggled(self, enabled: bool) -> None:
         self.force_light_mode = enabled
+        self.force_light_theme_checkbox.blockSignals(True)
+        self.force_light_theme_checkbox.setChecked(enabled)
+        self.force_light_theme_checkbox.blockSignals(False)
         _apply_application_appearance(enabled)
         self._schedule_user_config_save()
 
@@ -2090,7 +2095,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self._refresh_plots()
 
     def _aoi_unit_factor_hz(self) -> float:
-        return AOI_UNIT_FACTORS_HZ[self.aoi_unit_combo.currentText()]
+        return self.frequency_scale.factor_hz
 
     def _aoi_overlay_enabled(self) -> bool:
         return bool(self._visible_traces()) and self.aoi_enabled_checkbox.isChecked()
@@ -2115,7 +2120,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
     def _set_aoi_controls_enabled(self, enabled: bool) -> None:
         self.aoi_start_input.setEnabled(enabled)
         self.aoi_stop_input.setEnabled(enabled)
-        self.aoi_unit_combo.setEnabled(enabled)
+        self.aoi_display_unit_label.setEnabled(enabled)
 
     def _update_aoi_region_visibility(self) -> None:
         if self.aoi_region_item is None:
@@ -2126,6 +2131,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
     def _reset_aoi_controls(self) -> None:
         self._updating_aoi_controls = True
         try:
+            self.aoi_display_unit_label.setText(self.frequency_scale.unit)
             for spin_box in (self.aoi_start_input, self.aoi_stop_input):
                 spin_box.setRange(0.0, 0.0)
                 spin_box.setSingleStep(0.001)
@@ -2158,6 +2164,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         self._updating_aoi_controls = True
         try:
+            self.aoi_display_unit_label.setText(self.frequency_scale.unit)
             for spin_box in (self.aoi_start_input, self.aoi_stop_input):
                 spin_box.setRange(display_bounds[0], display_bounds[1])
                 spin_box.setSingleStep(step_size)
@@ -2238,7 +2245,8 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self._updating_marker_controls = True
         try:
             self.marker_frequency_input.setEnabled(visible)
-            self.marker_frequency_input.setSuffix(f" {self.frequency_scale.unit}")
+            self.marker_frequency_unit_label.setText(self.frequency_scale.unit)
+            self.marker_frequency_unit_label.setEnabled(visible)
             if not visible:
                 self.marker_frequency_input.setRange(0.0, 0.0)
                 self.marker_frequency_input.setValue(0.0)
