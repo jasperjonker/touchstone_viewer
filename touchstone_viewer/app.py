@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from typing import Sequence
 
 import numpy as np
@@ -54,6 +57,8 @@ DEFAULT_CONTROLS_VISIBLE = False
 DEFAULT_AOI_VISIBLE = True
 DEFAULT_MARKER_VISIBLE = True
 DEFAULT_FREQUENCY_UNIT_MODE = "Auto"
+DEFAULT_AOI_UNIT = "GHz"
+CONFIG_SAVE_DELAY_MS = 400
 MATCHING_STAGE_TEMPLATES = [
     ("Series", "L", "nH"),
     ("Shunt", "C", "pF"),
@@ -119,6 +124,29 @@ class _ViewerViewState:
     match_smith: _PlotViewState | None = None
 
 
+@dataclass(frozen=True)
+class AoiPreset:
+    start_hz: float
+    stop_hz: float
+    unit: str = DEFAULT_AOI_UNIT
+
+
+@dataclass
+class ViewerUserConfig:
+    frequency_unit_mode: str = DEFAULT_FREQUENCY_UNIT_MODE
+    controls_visible: bool = DEFAULT_CONTROLS_VISIBLE
+    aoi_visible: bool = DEFAULT_AOI_VISIBLE
+    aoi_start_hz: float | None = None
+    aoi_stop_hz: float | None = None
+    aoi_unit: str = DEFAULT_AOI_UNIT
+    marker_visible: bool = DEFAULT_MARKER_VISIBLE
+    marker_frequency_hz: float | None = None
+    threshold_visible: bool = DEFAULT_THRESHOLD_VISIBLE
+    threshold_db: float = DEFAULT_THRESHOLD_DB
+    aoi_presets: dict[str, AoiPreset] = field(default_factory=dict)
+    selected_aoi_preset: str | None = None
+
+
 class _SortableTableWidgetItem(QtWidgets.QTableWidgetItem):
     def __lt__(self, other: QtWidgets.QTableWidgetItem) -> bool:
         left_value = self.data(QtCore.Qt.ItemDataRole.UserRole)
@@ -135,17 +163,24 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.resize(1500, 920)
         self.setAcceptDrops(True)
         self.settings = QtCore.QSettings("TouchstoneViewer", "Touch")
+        self.user_config = _load_viewer_user_config()
 
         self.traces: list[LoadedTrace] = []
         self.frequency_scale = FrequencyScale(1.0e6, "MHz")
-        self.frequency_unit_mode = DEFAULT_FREQUENCY_UNIT_MODE
+        self.frequency_unit_mode = self.user_config.frequency_unit_mode
         self.reference_trace_path: Path | None = None
-        self.marker_frequency_hz: float | None = None
+        self.marker_frequency_hz: float | None = self.user_config.marker_frequency_hz
         self.marker_line: pg.InfiniteLine | None = None
         self.s21_marker_line: pg.InfiniteLine | None = None
         self.marker_plot_label: pg.TextItem | None = None
         self.s21_marker_plot_label: pg.TextItem | None = None
-        self.aoi_region_hz: tuple[float, float] | None = None
+        self.aoi_region_hz: tuple[float, float] | None = (
+            _sorted_frequency_region_hz(
+                (self.user_config.aoi_start_hz, self.user_config.aoi_stop_hz)
+            )
+            if self.user_config.aoi_start_hz is not None and self.user_config.aoi_stop_hz is not None
+            else None
+        )
         self.aoi_region_item: pg.LinearRegionItem | None = None
         self.s11_threshold_line: pg.InfiniteLine | None = None
         self.s21_threshold_line: pg.InfiniteLine | None = None
@@ -167,9 +202,21 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self._updating_marker = False
         self._updating_marker_controls = False
         self._updating_aoi_controls = False
+        self._updating_aoi_preset_controls = False
         self._updating_trace_controls = False
         self._updating_matching_controls = False
         self._updating_match_target_controls = False
+        self._aoi_presets = dict(self.user_config.aoi_presets)
+        self._selected_aoi_preset_name = (
+            self.user_config.selected_aoi_preset
+            if self.user_config.selected_aoi_preset in self._aoi_presets
+            else None
+        )
+        self._default_aoi_unit = self.user_config.aoi_unit
+        self._config_save_timer = QtCore.QTimer(self)
+        self._config_save_timer.setSingleShot(True)
+        self._config_save_timer.setInterval(CONFIG_SAVE_DELAY_MS)
+        self._config_save_timer.timeout.connect(self._write_user_config)
 
         self._build_ui()
         self._restore_default_matching_network()
@@ -209,7 +256,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.controls_toggle_button = QtWidgets.QToolButton()
         self.controls_toggle_button.setText("Controls")
         self.controls_toggle_button.setCheckable(True)
-        self.controls_toggle_button.setChecked(DEFAULT_CONTROLS_VISIBLE)
+        self.controls_toggle_button.setChecked(self.user_config.controls_visible)
         self.controls_toggle_button.setToolButtonStyle(
             QtCore.Qt.ToolButtonStyle.ToolButtonTextBesideIcon
         )
@@ -221,7 +268,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         self.controls_panel = self._build_controls_panel()
         layout.addWidget(self.controls_panel)
-        self._set_controls_panel_visible(DEFAULT_CONTROLS_VISIBLE)
+        self._set_controls_panel_visible(self.user_config.controls_visible)
 
         self.tab_widget = QtWidgets.QTabWidget()
         self.tab_widget.addTab(self._build_s11_tab(), "S11")
@@ -261,7 +308,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.frequency_unit_combo.addItems(
             [DEFAULT_FREQUENCY_UNIT_MODE, *FREQUENCY_UNIT_FACTORS_HZ.keys()]
         )
-        self.frequency_unit_combo.setCurrentText(DEFAULT_FREQUENCY_UNIT_MODE)
+        self.frequency_unit_combo.setCurrentText(self.frequency_unit_mode)
         self.frequency_unit_combo.currentTextChanged.connect(self._handle_frequency_unit_changed)
         view_layout.addWidget(self.frequency_unit_combo)
 
@@ -273,7 +320,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         aoi_prefix = QtWidgets.QLabel("Area of Interest")
         aoi_layout.addWidget(aoi_prefix)
         self.aoi_enabled_checkbox = QtWidgets.QCheckBox("Show")
-        self.aoi_enabled_checkbox.setChecked(DEFAULT_AOI_VISIBLE)
+        self.aoi_enabled_checkbox.setChecked(self.user_config.aoi_visible)
         self.aoi_enabled_checkbox.toggled.connect(self._handle_aoi_visibility_changed)
         aoi_layout.addWidget(self.aoi_enabled_checkbox)
 
@@ -290,9 +337,25 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         self.aoi_unit_combo = QtWidgets.QComboBox()
         self.aoi_unit_combo.addItems(AOI_UNIT_FACTORS_HZ.keys())
-        self.aoi_unit_combo.setCurrentText("GHz")
+        self.aoi_unit_combo.setCurrentText(self._default_aoi_unit)
         self.aoi_unit_combo.currentTextChanged.connect(self._handle_aoi_unit_changed)
         aoi_layout.addWidget(self.aoi_unit_combo)
+
+        preset_prefix = QtWidgets.QLabel("Preset")
+        aoi_layout.addWidget(preset_prefix)
+
+        self.aoi_preset_combo = QtWidgets.QComboBox()
+        self.aoi_preset_combo.setMinimumContentsLength(10)
+        self.aoi_preset_combo.currentIndexChanged.connect(self._handle_aoi_preset_changed)
+        aoi_layout.addWidget(self.aoi_preset_combo)
+
+        self.save_aoi_preset_button = QtWidgets.QPushButton("Save")
+        self.save_aoi_preset_button.clicked.connect(self._save_current_aoi_as_preset)
+        aoi_layout.addWidget(self.save_aoi_preset_button)
+
+        self.delete_aoi_preset_button = QtWidgets.QPushButton("Delete")
+        self.delete_aoi_preset_button.clicked.connect(self._delete_selected_aoi_preset)
+        aoi_layout.addWidget(self.delete_aoi_preset_button)
 
         top_row.addWidget(view_section)
         top_row.addWidget(self._build_panel_separator())
@@ -308,7 +371,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         threshold_layout.addWidget(threshold_prefix)
 
         self.threshold_enabled_checkbox = QtWidgets.QCheckBox("Show")
-        self.threshold_enabled_checkbox.setChecked(DEFAULT_THRESHOLD_VISIBLE)
+        self.threshold_enabled_checkbox.setChecked(self.user_config.threshold_visible)
         self.threshold_enabled_checkbox.toggled.connect(self._handle_threshold_visibility_changed)
         threshold_layout.addWidget(self.threshold_enabled_checkbox)
 
@@ -316,12 +379,12 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.threshold_input.setDecimals(2)
         self.threshold_input.setRange(0.0, 200.0)
         self.threshold_input.setSingleStep(0.5)
-        self.threshold_input.setValue(DEFAULT_THRESHOLD_DB)
+        self.threshold_input.setValue(self.user_config.threshold_db)
         self.threshold_input.setSuffix(" dB")
         self.threshold_input.setMinimumWidth(95)
         self.threshold_input.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
         self.threshold_input.valueChanged.connect(self._handle_threshold_changed)
-        self.threshold_input.setEnabled(DEFAULT_THRESHOLD_VISIBLE)
+        self.threshold_input.setEnabled(self.user_config.threshold_visible)
         threshold_layout.addWidget(self.threshold_input)
 
         top_row.addWidget(threshold_section)
@@ -336,7 +399,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         marker_layout.addWidget(marker_prefix)
 
         self.marker_enabled_checkbox = QtWidgets.QCheckBox("Show")
-        self.marker_enabled_checkbox.setChecked(DEFAULT_MARKER_VISIBLE)
+        self.marker_enabled_checkbox.setChecked(self.user_config.marker_visible)
         self.marker_enabled_checkbox.toggled.connect(self._handle_marker_visibility_changed)
         marker_layout.addWidget(self.marker_enabled_checkbox)
 
@@ -740,18 +803,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         layout.addWidget(splitter, stretch=1)
 
-        self.marker_table = self._build_marker_table(
-            [
-                "Trace",
-                "Freq",
-                "S11 (dB)",
-                "ΔRef (dB)",
-                "|S11| (lin)",
-                "ΔRef |S11| (lin)",
-                "Angle (deg)",
-                "Z (ohm)",
-            ]
-        )
+        self.marker_table = self._build_marker_table(self._s11_marker_table_headers())
         layout.addLayout(
             self._build_table_actions_row(
                 "Marker Table",
@@ -1063,6 +1115,20 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         table.setSortingEnabled(True)
         return table
 
+    def _s11_marker_table_headers(self) -> list[str]:
+        unit = self.aoi_unit_combo.currentText()
+        return [
+            "Trace",
+            "Freq",
+            "S11 (dB)",
+            "ΔRef (dB)",
+            "|S11| (lin)",
+            "ΔRef |S11| (lin)",
+            "Angle (deg)",
+            "Z (ohm)",
+            f"AOI Area (|dB|*{unit})",
+        ]
+
     def _build_table_actions_row(
         self,
         title: str,
@@ -1092,11 +1158,129 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         spin_box.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
         return spin_box
 
+    def _current_user_config(self) -> ViewerUserConfig:
+        aoi_start_hz = None
+        aoi_stop_hz = None
+        if self.aoi_region_hz is not None:
+            aoi_start_hz, aoi_stop_hz = _sorted_frequency_region_hz(self.aoi_region_hz)
+
+        return ViewerUserConfig(
+            frequency_unit_mode=self.frequency_unit_mode,
+            controls_visible=self.controls_toggle_button.isChecked(),
+            aoi_visible=self.aoi_enabled_checkbox.isChecked(),
+            aoi_start_hz=aoi_start_hz,
+            aoi_stop_hz=aoi_stop_hz,
+            aoi_unit=self.aoi_unit_combo.currentText(),
+            marker_visible=self.marker_enabled_checkbox.isChecked(),
+            marker_frequency_hz=self.marker_frequency_hz,
+            threshold_visible=self.threshold_enabled_checkbox.isChecked(),
+            threshold_db=float(self.threshold_input.value()),
+            aoi_presets=dict(self._aoi_presets),
+            selected_aoi_preset=self._selected_aoi_preset_name,
+        )
+
+    def _schedule_user_config_save(self) -> None:
+        self._config_save_timer.start()
+
+    def _write_user_config(self) -> None:
+        self.user_config = self._current_user_config()
+        _write_viewer_user_config(self.user_config)
+
+    def _sync_aoi_preset_controls(self) -> None:
+        self._updating_aoi_preset_controls = True
+        try:
+            current_name = self._selected_aoi_preset_name
+            self.aoi_preset_combo.blockSignals(True)
+            self.aoi_preset_combo.clear()
+            self.aoi_preset_combo.addItem("Custom", None)
+            for preset_name in sorted(self._aoi_presets, key=_natural_sort_key):
+                self.aoi_preset_combo.addItem(preset_name, preset_name)
+            if current_name is None:
+                self.aoi_preset_combo.setCurrentIndex(0)
+            else:
+                index = self.aoi_preset_combo.findData(current_name)
+                self.aoi_preset_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.aoi_preset_combo.blockSignals(False)
+            has_region = self.aoi_region_hz is not None and bool(self.traces)
+            self.save_aoi_preset_button.setEnabled(has_region)
+            self.delete_aoi_preset_button.setEnabled(current_name is not None and bool(self.traces))
+        finally:
+            self._updating_aoi_preset_controls = False
+
+    def _apply_aoi_preset(self, preset_name: str) -> None:
+        preset = self._aoi_presets.get(preset_name)
+        if preset is None:
+            return
+
+        self._selected_aoi_preset_name = preset_name
+        self._updating_aoi_controls = True
+        try:
+            self.aoi_unit_combo.setCurrentText(preset.unit)
+        finally:
+            self._updating_aoi_controls = False
+        self.aoi_region_hz = _sorted_frequency_region_hz((preset.start_hz, preset.stop_hz))
+        if self._visible_traces():
+            self._sync_aoi_controls_to_region()
+        else:
+            self._reset_aoi_controls()
+        self._update_aoi_region_item()
+        self._sync_aoi_preset_controls()
+        self._update_marker_table()
+        self._schedule_user_config_save()
+
+    def _handle_aoi_preset_changed(self, index: int) -> None:
+        if self._updating_aoi_preset_controls:
+            return
+
+        preset_name = self.aoi_preset_combo.itemData(index)
+        if not preset_name:
+            self._selected_aoi_preset_name = None
+            self._sync_aoi_preset_controls()
+            self._schedule_user_config_save()
+            return
+        self._apply_aoi_preset(str(preset_name))
+
+    def _save_current_aoi_as_preset(self) -> None:
+        if self.aoi_region_hz is None:
+            return
+
+        preset_name, accepted = QtWidgets.QInputDialog.getText(
+            self,
+            "Save AOI Preset",
+            "Preset name:",
+            text=self._selected_aoi_preset_name or "",
+        )
+        if not accepted:
+            return
+        preset_name = preset_name.strip()
+        if not preset_name:
+            return
+
+        start_hz, stop_hz = _sorted_frequency_region_hz(self.aoi_region_hz)
+        self._aoi_presets[preset_name] = AoiPreset(
+            start_hz=start_hz,
+            stop_hz=stop_hz,
+            unit=self.aoi_unit_combo.currentText(),
+        )
+        self._selected_aoi_preset_name = preset_name
+        self._sync_aoi_preset_controls()
+        self._schedule_user_config_save()
+
+    def _delete_selected_aoi_preset(self) -> None:
+        preset_name = self._selected_aoi_preset_name
+        if preset_name is None:
+            return
+        self._aoi_presets.pop(preset_name, None)
+        self._selected_aoi_preset_name = None
+        self._sync_aoi_preset_controls()
+        self._schedule_user_config_save()
+
     def _set_controls_panel_visible(self, visible: bool) -> None:
         self.controls_panel.setVisible(visible)
         self.controls_toggle_button.setArrowType(
             QtCore.Qt.ArrowType.DownArrow if visible else QtCore.Qt.ArrowType.RightArrow
         )
+        self._schedule_user_config_save()
 
     def _capture_view_state(self) -> _ViewerViewState:
         return _ViewerViewState(
@@ -1237,8 +1421,6 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         else:
             self.marker_line = None
             self.s21_marker_line = None
-            self.marker_frequency_hz = None
-            self.aoi_region_hz = None
             self._reset_aoi_controls()
 
         self._sync_trace_controls()
@@ -1745,6 +1927,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_frequency_hz = frequency_hz
         self._set_marker_line_values(frequency_hz)
         self._update_marker_outputs()
+        self._schedule_user_config_save()
 
     def _handle_s11_marker_moved(self) -> None:
         if not self.marker_line or self._updating_marker or not self._marker_overlay_enabled():
@@ -1753,6 +1936,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_frequency_hz = self.marker_line.value() * self.frequency_scale.factor_hz
         self._set_marker_line_values(self.marker_frequency_hz)
         self._update_marker_outputs()
+        self._schedule_user_config_save()
 
     def _handle_s21_marker_moved(self) -> None:
         if not self.s21_marker_line or self._updating_marker or not self._marker_overlay_enabled():
@@ -1761,6 +1945,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_frequency_hz = self.s21_marker_line.value() * self.frequency_scale.factor_hz
         self._set_marker_line_values(self.marker_frequency_hz)
         self._update_marker_outputs()
+        self._schedule_user_config_save()
 
     def _handle_match_marker_moved(self) -> None:
         if not self.match_s11_marker_line or self._updating_marker or not self._marker_overlay_enabled():
@@ -1769,6 +1954,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_frequency_hz = self.match_s11_marker_line.value() * self.frequency_scale.factor_hz
         self._set_marker_line_values(self.marker_frequency_hz)
         self._update_marker_outputs()
+        self._schedule_user_config_save()
 
     def _handle_aoi_value_changed(self, _value: float) -> None:
         if self._updating_aoi_controls or not self._visible_traces():
@@ -1787,8 +1973,12 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         elif changed_control is self.aoi_stop_input and stop_hz < start_hz:
             start_hz = stop_hz
         self.aoi_region_hz = _clamp_frequency_region_hz((start_hz, stop_hz), bounds_hz)
+        self._selected_aoi_preset_name = None
         self._sync_aoi_controls_to_region()
         self._update_aoi_region_item()
+        self._sync_aoi_preset_controls()
+        self._update_marker_table()
+        self._schedule_user_config_save()
 
     def _handle_aoi_unit_changed(self, _unit: str) -> None:
         if self._updating_aoi_controls:
@@ -1798,11 +1988,16 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             self._sync_aoi_controls_to_region()
         else:
             self._reset_aoi_controls()
+        self._selected_aoi_preset_name = None
+        self._sync_aoi_preset_controls()
+        self._update_marker_table()
+        self._schedule_user_config_save()
 
     def _handle_frequency_unit_changed(self, unit: str) -> None:
         view_state = self._capture_view_state()
         self.frequency_unit_mode = unit
         self._refresh_plots(preserve_view_state=view_state)
+        self._schedule_user_config_save()
 
     def _handle_marker_frequency_changed(self, value: float) -> None:
         if self._updating_marker_controls or not self._marker_overlay_enabled():
@@ -1811,20 +2006,25 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.marker_frequency_hz = value * self.frequency_scale.factor_hz
         self._set_marker_line_values(self.marker_frequency_hz)
         self._update_marker_outputs()
+        self._schedule_user_config_save()
 
     def _handle_aoi_visibility_changed(self, _visible: bool) -> None:
         self._sync_control_states()
+        self._schedule_user_config_save()
 
     def _handle_threshold_changed(self, _value: float) -> None:
         self._update_threshold_lines()
+        self._schedule_user_config_save()
 
     def _handle_threshold_visibility_changed(self, visible: bool) -> None:
         self.threshold_input.setEnabled(visible)
         self._update_threshold_lines()
+        self._schedule_user_config_save()
 
     def _handle_marker_visibility_changed(self, _visible: bool) -> None:
         self._sync_control_states()
         self._update_marker_outputs()
+        self._schedule_user_config_save()
 
     def _handle_reference_trace_changed(self, index: int) -> None:
         if self._updating_trace_controls:
@@ -1873,9 +2073,11 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         has_visible_traces = bool(self._visible_traces())
         self.aoi_enabled_checkbox.setEnabled(has_loaded_traces)
         self.marker_enabled_checkbox.setEnabled(has_loaded_traces)
+        self.aoi_preset_combo.setEnabled(has_loaded_traces)
         self._set_aoi_controls_enabled(self._aoi_overlay_enabled())
         self._sync_marker_frequency_input()
         self._update_aoi_region_visibility()
+        self._sync_aoi_preset_controls()
         self._update_marker_visibility()
         if not has_visible_traces:
             self._reset_aoi_controls()
@@ -1900,6 +2102,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                 spin_box.setValue(0.0)
         finally:
             self._updating_aoi_controls = False
+        self._sync_aoi_preset_controls()
 
     def _sync_aoi_controls_to_region(self) -> None:
         bounds_hz = self._frequency_span_hz()
@@ -1932,6 +2135,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             self.aoi_stop_input.setValue(display_region[1])
         finally:
             self._updating_aoi_controls = False
+        self._sync_aoi_preset_controls()
 
     def _update_aoi_region_item(self) -> None:
         if self.aoi_region_item is None or self.aoi_region_hz is None:
@@ -1964,8 +2168,8 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             if marker_line is not None:
                 marker_line.setVisible(visible)
 
-        for marker_table in (self.marker_table, self.s21_marker_table):
-            marker_table.setHidden(not visible)
+        self.marker_table.setHidden(not visible)
+        self.s21_marker_table.setHidden(not visible)
 
         if not visible:
             for trace in self.traces:
@@ -2131,6 +2335,87 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         table.sortItems(sort_column, sort_order)
         table.resizeRowsToContents()
 
+    def _set_s11_table_headers(self, headers: list[str]) -> None:
+        self.marker_table.setHorizontalHeaderLabels(headers)
+
+    def _marker_parameter(
+        self,
+        trace: LoadedTrace,
+        out_port: int,
+        in_port: int,
+    ) -> complex | None:
+        if not self._marker_overlay_enabled() or self.marker_frequency_hz is None:
+            return None
+        return trace.data.interpolated_parameter(out_port, in_port, self.marker_frequency_hz)
+
+    def _update_s11_marker_points(self, trace: LoadedTrace) -> complex | None:
+        parameter = self._marker_parameter(trace, 1, 1)
+        if parameter is None or self.marker_frequency_hz is None:
+            self._set_scatter_point(trace.s11_marker, None)
+            self._set_scatter_point(trace.smith_marker, None)
+            return None
+
+        display_frequency = self.marker_frequency_hz / self.frequency_scale.factor_hz
+        self._set_scatter_point(trace.s11_marker, (display_frequency, _parameter_db(parameter)))
+        self._set_scatter_point(trace.smith_marker, (parameter.real, parameter.imag))
+        return parameter
+
+    def _aoi_parameter_segment(
+        self,
+        trace: LoadedTrace,
+        out_port: int,
+        in_port: int,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        if self.aoi_region_hz is None or not trace.data.has_parameter(out_port, in_port):
+            return None
+
+        start_hz, stop_hz = sorted(self.aoi_region_hz)
+        minimum_hz = float(trace.data.frequencies_hz[0])
+        maximum_hz = float(trace.data.frequencies_hz[-1])
+        if start_hz < minimum_hz or stop_hz > maximum_hz:
+            return None
+
+        start_parameter = trace.data.interpolated_parameter(out_port, in_port, start_hz)
+        stop_parameter = trace.data.interpolated_parameter(out_port, in_port, stop_hz)
+        if start_parameter is None or stop_parameter is None:
+            return None
+
+        if np.isclose(start_hz, stop_hz):
+            return (
+                np.asarray([start_hz], dtype=np.float64),
+                np.asarray([start_parameter], dtype=np.complex128),
+            )
+
+        mask = (trace.data.frequencies_hz > start_hz) & (trace.data.frequencies_hz < stop_hz)
+        segment_frequencies_hz = np.concatenate(
+            (
+                np.asarray([start_hz], dtype=np.float64),
+                trace.data.frequencies_hz[mask],
+                np.asarray([stop_hz], dtype=np.float64),
+            )
+        )
+        segment_parameters = np.concatenate(
+            (
+                np.asarray([start_parameter], dtype=np.complex128),
+                trace.data.parameter(out_port, in_port)[mask],
+                np.asarray([stop_parameter], dtype=np.complex128),
+            )
+        )
+        return (segment_frequencies_hz, segment_parameters)
+
+    def _aoi_area_value(
+        self,
+        trace: LoadedTrace,
+        out_port: int,
+        in_port: int,
+    ) -> float | None:
+        segment = self._aoi_parameter_segment(trace, out_port, in_port)
+        if segment is None:
+            return None
+        factor_hz = self._aoi_unit_factor_hz()
+        segment_s_db = 20.0 * np.log10(np.maximum(np.abs(segment[1]), 1.0e-12))
+        return float(np.trapezoid(np.abs(segment_s_db), x=segment[0] / factor_hz))
+
     def _update_marker_table(self) -> None:
         visible_traces = self._visible_traces()
         reference_trace = self._reference_trace()
@@ -2139,24 +2424,22 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             reference_parameter = reference_trace.data.interpolated_parameter(1, 1, self.marker_frequency_hz)
 
         sort_column, sort_order = self._begin_table_update(self.marker_table)
+        self._set_s11_table_headers(self._s11_marker_table_headers())
         if not self._marker_overlay_enabled():
             self.marker_table.setRowCount(0)
             for trace in visible_traces:
-                self._set_scatter_point(trace.s11_marker, None)
-                self._set_scatter_point(trace.smith_marker, None)
+                self._update_s11_marker_points(trace)
             self._end_table_update(self.marker_table, sort_column, sort_order)
             return
 
         self.marker_table.setRowCount(len(visible_traces))
 
         for row_index, trace in enumerate(visible_traces):
-            parameter = None
-            if self.marker_frequency_hz is not None:
-                parameter = trace.data.interpolated_parameter(1, 1, self.marker_frequency_hz)
+            parameter = self._update_s11_marker_points(trace)
+            aoi_area = self._aoi_area_value(trace, 1, 1)
+            aoi_area_text = "-" if aoi_area is None else f"{aoi_area:.3f}"
 
             if parameter is None:
-                self._set_scatter_point(trace.s11_marker, None)
-                self._set_scatter_point(trace.smith_marker, None)
                 values = [
                     self._display_name_for_trace(trace),
                     "out of range",
@@ -2166,8 +2449,11 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                     "out of range",
                     "out of range",
                     "out of range",
+                    aoi_area_text,
                 ]
                 sort_values = [None] * len(values)
+                if aoi_area is not None:
+                    sort_values[-1] = aoi_area
             else:
                 display_frequency = self.marker_frequency_hz / self.frequency_scale.factor_hz
                 s11_db = _parameter_db(parameter)
@@ -2186,8 +2472,6 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                     reference_s11_mag,
                     precision=4,
                 )
-                self._set_scatter_point(trace.s11_marker, (display_frequency, s11_db))
-                self._set_scatter_point(trace.smith_marker, (parameter.real, parameter.imag))
                 values = [
                     self._display_name_for_trace(trace),
                     f"{display_frequency:.6f}",
@@ -2197,6 +2481,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                     delta_s11_mag,
                     f"{np.degrees(np.angle(parameter)):.2f}",
                     _format_impedance(impedance),
+                    aoi_area_text,
                 ]
                 sort_values = [
                     None,
@@ -2207,6 +2492,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
                     None if reference_s11_mag is None else abs(parameter) - reference_s11_mag,
                     float(np.degrees(np.angle(parameter))),
                     None,
+                    aoi_area,
                 ]
 
             self._set_table_row(
@@ -2565,6 +2851,12 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             return
         event.ignore()
 
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if self._config_save_timer.isActive():
+            self._config_save_timer.stop()
+        self._write_user_config()
+        super().closeEvent(event)
+
 
 def _parameter_db(parameter: complex) -> float:
     return 20.0 * np.log10(max(abs(parameter), 1.0e-12))
@@ -2602,6 +2894,11 @@ def _natural_sort_key(value: str) -> tuple[tuple[int, int | str], ...]:
 
 def _trace_sort_key(trace: LoadedTrace) -> tuple[tuple[tuple[int, int | str], ...], str]:
     return (_natural_sort_key(trace.data.label), str(trace.data.path).casefold())
+
+
+def _sorted_frequency_region_hz(region_hz: tuple[float, float]) -> tuple[float, float]:
+    start_hz, stop_hz = region_hz
+    return (float(min(start_hz, stop_hz)), float(max(start_hz, stop_hz)))
 
 
 def _default_frequency_region_hz(bounds_hz: tuple[float, float]) -> tuple[float, float]:
@@ -2649,6 +2946,198 @@ def _resolve_browser_directory(
         if path.is_dir():
             return path.resolve()
     return Path.cwd()
+
+
+def _viewer_config_path() -> Path:
+    base_directory = Path(
+        os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    ).expanduser()
+    return base_directory / "touchstone_viewer" / "config.yaml"
+
+
+def _yaml_scalar(value: object) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return json.dumps(str(value))
+
+
+def _parse_yaml_scalar(text: str) -> Any:
+    lowered = text.lower()
+    if lowered == "null":
+        return None
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if text.startswith('"'):
+        return json.loads(text)
+    try:
+        if any(character in text for character in (".", "e", "E")):
+            return float(text)
+        return int(text)
+    except ValueError:
+        return text
+
+
+def _parse_yaml_key(text: str) -> str:
+    parsed = _parse_yaml_scalar(text)
+    return str(parsed)
+
+
+def _parse_viewer_yaml(text: str) -> dict[str, Any]:
+    data: dict[str, Any] = {}
+    current_section: str | None = None
+    current_preset_name: str | None = None
+
+    for raw_line in text.splitlines():
+        line_without_comment = raw_line.split("#", maxsplit=1)[0].rstrip()
+        if not line_without_comment.strip():
+            continue
+
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        stripped = line_without_comment.strip()
+
+        if indent == 0:
+            current_preset_name = None
+            if stripped.endswith(":"):
+                current_section = _parse_yaml_key(stripped[:-1].strip())
+                if current_section == "aoi_presets":
+                    data[current_section] = {}
+                continue
+
+            key_text, value_text = stripped.split(":", maxsplit=1)
+            data[_parse_yaml_key(key_text.strip())] = _parse_yaml_scalar(value_text.strip())
+            current_section = None
+            continue
+
+        if indent == 2 and current_section == "aoi_presets" and stripped.endswith(":"):
+            current_preset_name = _parse_yaml_key(stripped[:-1].strip())
+            data["aoi_presets"][current_preset_name] = {}
+            continue
+
+        if indent == 4 and current_section == "aoi_presets" and current_preset_name is not None:
+            key_text, value_text = stripped.split(":", maxsplit=1)
+            data["aoi_presets"][current_preset_name][
+                _parse_yaml_key(key_text.strip())
+            ] = _parse_yaml_scalar(value_text.strip())
+
+    return data
+
+
+def _float_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_viewer_user_config() -> ViewerUserConfig:
+    config_path = _viewer_config_path()
+    if not config_path.exists():
+        return ViewerUserConfig()
+
+    try:
+        raw_config = _parse_viewer_yaml(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return ViewerUserConfig()
+
+    config = ViewerUserConfig()
+
+    frequency_unit_mode = raw_config.get("frequency_unit_mode")
+    if frequency_unit_mode in {DEFAULT_FREQUENCY_UNIT_MODE, *FREQUENCY_UNIT_FACTORS_HZ.keys()}:
+        config.frequency_unit_mode = str(frequency_unit_mode)
+
+    controls_visible = raw_config.get("controls_visible")
+    if isinstance(controls_visible, bool):
+        config.controls_visible = controls_visible
+
+    aoi_visible = raw_config.get("aoi_visible")
+    if isinstance(aoi_visible, bool):
+        config.aoi_visible = aoi_visible
+
+    config.aoi_start_hz = _float_or_none(raw_config.get("aoi_start_hz"))
+    config.aoi_stop_hz = _float_or_none(raw_config.get("aoi_stop_hz"))
+
+    aoi_unit = raw_config.get("aoi_unit")
+    if aoi_unit in AOI_UNIT_FACTORS_HZ:
+        config.aoi_unit = str(aoi_unit)
+
+    marker_visible = raw_config.get("marker_visible")
+    if isinstance(marker_visible, bool):
+        config.marker_visible = marker_visible
+
+    config.marker_frequency_hz = _float_or_none(raw_config.get("marker_frequency_hz"))
+
+    threshold_visible = raw_config.get("threshold_visible")
+    if isinstance(threshold_visible, bool):
+        config.threshold_visible = threshold_visible
+
+    threshold_db = _float_or_none(raw_config.get("threshold_db"))
+    if threshold_db is not None:
+        config.threshold_db = threshold_db
+
+    raw_presets = raw_config.get("aoi_presets")
+    if isinstance(raw_presets, dict):
+        for preset_name, preset_data in raw_presets.items():
+            if not isinstance(preset_name, str) or not isinstance(preset_data, dict):
+                continue
+            start_hz = _float_or_none(preset_data.get("start_hz"))
+            stop_hz = _float_or_none(preset_data.get("stop_hz"))
+            if start_hz is None or stop_hz is None:
+                continue
+            preset_unit = preset_data.get("unit")
+            if preset_unit not in AOI_UNIT_FACTORS_HZ:
+                preset_unit = DEFAULT_AOI_UNIT
+            config.aoi_presets[preset_name] = AoiPreset(
+                start_hz=start_hz,
+                stop_hz=stop_hz,
+                unit=str(preset_unit),
+            )
+
+    selected_aoi_preset = raw_config.get("selected_aoi_preset")
+    if isinstance(selected_aoi_preset, str) and selected_aoi_preset in config.aoi_presets:
+        config.selected_aoi_preset = selected_aoi_preset
+
+    return config
+
+
+def _write_viewer_user_config(config: ViewerUserConfig) -> None:
+    config_path = _viewer_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines = [
+        "# Touchstone Viewer user configuration",
+        f"frequency_unit_mode: {_yaml_scalar(config.frequency_unit_mode)}",
+        f"controls_visible: {_yaml_scalar(config.controls_visible)}",
+        f"aoi_visible: {_yaml_scalar(config.aoi_visible)}",
+        f"aoi_start_hz: {_yaml_scalar(config.aoi_start_hz)}",
+        f"aoi_stop_hz: {_yaml_scalar(config.aoi_stop_hz)}",
+        f"aoi_unit: {_yaml_scalar(config.aoi_unit)}",
+        f"marker_visible: {_yaml_scalar(config.marker_visible)}",
+        f"marker_frequency_hz: {_yaml_scalar(config.marker_frequency_hz)}",
+        f"threshold_visible: {_yaml_scalar(config.threshold_visible)}",
+        f"threshold_db: {_yaml_scalar(config.threshold_db)}",
+        f"selected_aoi_preset: {_yaml_scalar(config.selected_aoi_preset)}",
+        "aoi_presets:",
+    ]
+    for preset_name in sorted(config.aoi_presets, key=_natural_sort_key):
+        preset = config.aoi_presets[preset_name]
+        lines.extend(
+            [
+                f"  {_yaml_scalar(preset_name)}:",
+                f"    start_hz: {_yaml_scalar(preset.start_hz)}",
+                f"    stop_hz: {_yaml_scalar(preset.stop_hz)}",
+                f"    unit: {_yaml_scalar(preset.unit)}",
+            ]
+        )
+
+    config_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

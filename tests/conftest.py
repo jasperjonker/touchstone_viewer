@@ -18,10 +18,11 @@ def qapp() -> QtWidgets.QApplication:
 
 
 @pytest.fixture
-def isolated_qsettings(tmp_path: Path) -> None:
+def isolated_qsettings(tmp_path: Path, monkeypatch) -> None:
     QtCore.QSettings.setDefaultFormat(QtCore.QSettings.Format.IniFormat)
     QtCore.QSettings.setPath(
         QtCore.QSettings.Format.IniFormat,
         QtCore.QSettings.Scope.UserScope,
         str(tmp_path),
     )
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))

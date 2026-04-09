@@ -27,6 +27,8 @@ It is designed for quick antenna and matching-network inspection with:
 - Override the plotted frequency unit with `Hz`, `kHz`, `MHz`, or `GHz`.
 - Define an area of interest with start/stop fields and a shared frequency unit selector.
 - Toggle the area-of-interest band on or off without losing its saved frequency range.
+- Show AOI area directly in the `S11` marker table as an extra column.
+- Save named AOI presets such as `GNSS L1` or `GNSS L5` and reapply them quickly.
 - Toggle a shared threshold line on or off and adjust its dB value for both S11 and S21.
 - Toggle the marker overlay and marker tables on or off.
 - Type an exact marker frequency instead of dragging the line by hand.
@@ -123,6 +125,8 @@ The project currently enforces a minimum total coverage of `80%`.
 - Use `Marker` -> `At` to type an exact marker frequency in the current plot unit.
 - Use `Area of Interest` -> `Show` to enable or hide the shaded S11 band.
 - Enter the area-of-interest start and stop values, then choose `kHz`, `MHz`, or `GHz`.
+- Use the AOI `Preset` combo plus `Save`/`Delete` to manage named AOI ranges.
+- The `S11` marker table includes an `AOI Area` column that integrates `|S11 (dB)|` across the selected AOI.
 - Use `Threshold` -> `Show` to enable the horizontal reference line on both plots.
 - Adjust the `Threshold` value to move that line, for example `10 dB` to show the `-10 dB` reference.
 - Use `Marker` -> `Show` to enable or hide the vertical marker lines and marker tables.
@@ -130,6 +134,7 @@ The project currently enforces a minimum total coverage of `80%`.
 - Use the `Traces` list to hide or show individual files without removing them from the session.
 - Use `Compare To` to select the baseline used for delta values in the marker tables and the highlighted reference line.
 - The file dialog reopens in the last directory you used. On first launch, it defaults to your Downloads folder.
+- Common viewer settings and AOI presets are stored in `~/.config/touchstone_viewer/config.yaml`.
 
 ## Supported Touchstone Formats
 

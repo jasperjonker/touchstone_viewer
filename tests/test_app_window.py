@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -431,6 +432,50 @@ def test_frequency_unit_change_preserves_view_marker_and_aoi(
     window.close()
 
 
+def test_s11_table_shows_aoi_area_as_an_extra_column(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file_with_content(
+        tmp_path / "aoi_area.s1p",
+        "# GHz S DB R 50\n"
+        "2.0 -10 0\n"
+        "2.5 -20 0\n"
+        "3.0 -30 0\n",
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_unit_combo.setCurrentText("GHz")
+    window.aoi_start_input.setValue(2.0)
+    window.aoi_stop_input.setValue(3.0)
+
+    assert [window.marker_table.horizontalHeaderItem(index).text() for index in range(9)] == [
+        "Trace",
+        "Freq",
+        "S11 (dB)",
+        "ΔRef (dB)",
+        "|S11| (lin)",
+        "ΔRef |S11| (lin)",
+        "Angle (deg)",
+        "Z (ohm)",
+        "AOI Area (|dB|*GHz)",
+    ]
+    assert [window.marker_table.item(0, index).text() for index in range(9)] == [
+        "aoi_area",
+        "2.500000",
+        "-20.000",
+        "-",
+        "0.1000",
+        "-",
+        "0.00",
+        "61.11 + j0.00",
+        "20.000",
+    ]
+
+    window.close()
+
+
 def test_match_tab_applies_enabled_network_stage(
     qapp: QtWidgets.QApplication,
     isolated_qsettings: None,
@@ -587,13 +632,106 @@ def test_marker_table_can_be_exported_to_csv(
 
     window = TouchstoneViewerWindow([file_path])
     window._export_table_to_csv(window.marker_table, suggested_name="s11_marker_table.csv")
+    expected_header = ",".join(
+        window.marker_table.horizontalHeaderItem(column).text()
+        for column in range(window.marker_table.columnCount())
+    )
+    expected_row = ",".join(
+        window.marker_table.item(0, column).text()
+        for column in range(window.marker_table.columnCount())
+    )
 
     assert export_path.read_text(encoding="utf-8").splitlines() == [
-        "Trace,Freq,S11 (dB),ΔRef (dB),|S11| (lin),ΔRef |S11| (lin),Angle (deg),Z (ohm)",
-        "exportable,2.500000,-12.041,-,0.2500,-,10.00,82.22 + j7.61",
+        expected_header,
+        expected_row,
     ]
 
     window.close()
+
+
+def test_common_settings_are_persisted_in_yaml_config(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "persisted.s1p")
+    config_path = Path(os.environ["XDG_CONFIG_HOME"]) / "touchstone_viewer" / "config.yaml"
+
+    window = TouchstoneViewerWindow([file_path])
+    window.frequency_unit_combo.setCurrentText("MHz")
+    window.aoi_unit_combo.setCurrentText("MHz")
+    window.aoi_start_input.setValue(2400.0)
+    window.aoi_stop_input.setValue(2500.0)
+    window.marker_frequency_input.setValue(2450.0)
+    window.threshold_enabled_checkbox.setChecked(True)
+    window.threshold_input.setValue(6.0)
+    window.close()
+
+    assert config_path.exists()
+    config_text = config_path.read_text(encoding="utf-8")
+    assert 'frequency_unit_mode: "MHz"' in config_text
+    assert "marker_frequency_hz: 2450000000.0" in config_text
+    assert "aoi_start_hz: 2400000000.0" in config_text
+    assert "aoi_stop_hz: 2500000000.0" in config_text
+
+    restored_window = TouchstoneViewerWindow([file_path])
+
+    assert restored_window.frequency_unit_combo.currentText() == "MHz"
+    assert restored_window.aoi_unit_combo.currentText() == "MHz"
+    assert restored_window.aoi_start_input.value() == pytest.approx(2400.0)
+    assert restored_window.aoi_stop_input.value() == pytest.approx(2500.0)
+    assert restored_window.marker_frequency_input.value() == pytest.approx(2450.0)
+    assert restored_window.threshold_enabled_checkbox.isChecked()
+    assert restored_window.threshold_input.value() == pytest.approx(6.0)
+
+    restored_window.close()
+
+
+def test_aoi_presets_can_be_saved_and_reused(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "presettable.s1p")
+    config_path = Path(os.environ["XDG_CONFIG_HOME"]) / "touchstone_viewer" / "config.yaml"
+
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("GNSS L1", True),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_unit_combo.setCurrentText("MHz")
+    window.aoi_start_input.setValue(2400.0)
+    window.aoi_stop_input.setValue(2500.0)
+    window.save_aoi_preset_button.click()
+
+    assert window.aoi_preset_combo.currentText() == "GNSS L1"
+
+    window.aoi_start_input.setValue(2600.0)
+    window.aoi_stop_input.setValue(2700.0)
+    window.aoi_preset_combo.setCurrentText("GNSS L1")
+
+    assert window.aoi_start_input.value() == pytest.approx(2400.0)
+    assert window.aoi_stop_input.value() == pytest.approx(2500.0)
+
+    window.close()
+
+    assert '"GNSS L1":' in config_path.read_text(encoding="utf-8")
+
+    restored_window = TouchstoneViewerWindow([file_path])
+
+    assert "GNSS L1" in [
+        restored_window.aoi_preset_combo.itemText(index)
+        for index in range(restored_window.aoi_preset_combo.count())
+    ]
+    assert restored_window.aoi_preset_combo.currentText() == "GNSS L1"
+    assert restored_window.aoi_start_input.value() == pytest.approx(2400.0)
+    assert restored_window.aoi_stop_input.value() == pytest.approx(2500.0)
+
+    restored_window.close()
 
 
 def test_aoi_controls_update_region_and_clear_resets_state(
