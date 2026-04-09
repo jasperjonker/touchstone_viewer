@@ -735,6 +735,38 @@ def test_load_files_reports_errors_and_skips_duplicates(
     window.close()
 
 
+def test_loading_new_files_refits_the_plot_view_to_all_visible_traces(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    first_file = _write_touchstone_file_with_content(
+        tmp_path / "first_fit.s1p",
+        "# GHz S DB R 50\n"
+        "2.0 -12 0\n"
+        "2.5 -10 0\n"
+        "3.0 -8 0\n",
+    )
+    second_file = _write_touchstone_file_with_content(
+        tmp_path / "second_fit.s1p",
+        "# GHz S DB R 50\n"
+        "1.0 -25 0\n"
+        "4.0 -2 0\n",
+    )
+
+    window = TouchstoneViewerWindow([first_file])
+    window.s11_plot.getPlotItem().setXRange(2.2, 2.4, padding=0.0)
+    window.s11_plot.getPlotItem().setYRange(-11.0, -9.0, padding=0.0)
+
+    window.load_files([second_file])
+
+    assert len(window.traces) == 2
+    assert window.s11_plot.getPlotItem().viewRange()[0] == pytest.approx([1.0, 4.0])
+    assert window.s11_plot.getPlotItem().viewRange()[1] == pytest.approx([-25.0, -2.0])
+
+    window.close()
+
+
 def test_marker_table_can_be_exported_to_csv(
     monkeypatch,
     qapp: QtWidgets.QApplication,

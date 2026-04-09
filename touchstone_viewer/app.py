@@ -2122,6 +2122,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             if self.marker_frequency_hz is None:
                 self.marker_frequency_hz = self._default_marker_frequency()
             self._refresh_plots()
+            self.reset_view()
 
         if errors:
             QtWidgets.QMessageBox.warning(self, "Touchstone Load Errors", "\n".join(errors))

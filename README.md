@@ -21,6 +21,7 @@ It is designed for quick antenna and matching-network inspection with:
 ## Features
 
 - Open one or more `.s1p` or `.s2p` files from the command line, file dialog, or drag and drop.
+- Automatically fit the plot view to all loaded traces whenever new Touchstone files are added.
 - Compare multiple traces with clear coloring and plot legends.
 - Inspect a specific frequency using the movable marker.
 - Open the `Controls` panel when you want to adjust overlays instead of keeping those inputs on screen all the time.
