@@ -112,10 +112,12 @@ def test_window_initial_load_builds_plots(
 
     assert len(window.traces) == 1
     assert window.marker_line is not None
-    assert window.aoi_region_item is not None
+    assert window.aoi_region_item is None
     assert window.summary_label.text() == "1 trace(s) loaded, 1 visible"
-    assert window.aoi_start_input.isEnabled()
-    assert window.aoi_stop_input.isEnabled()
+    assert not window.aoi_enabled_checkbox.isChecked()
+    assert not window.aoi_start_input.isEnabled()
+    assert not window.aoi_stop_input.isEnabled()
+    assert not window.clear_aoi_button.isEnabled()
     assert window.marker_table.rowCount() == 1
     assert window.tab_widget.count() == 3
     assert window.controls_panel.isHidden()
@@ -137,15 +139,28 @@ def test_controls_panel_and_overlay_toggles(
 
     assert window.controls_panel.isHidden()
     window.controls_toggle_button.setChecked(True)
+    assert not window.aoi_enabled_checkbox.isChecked()
+    assert not window.aoi_start_input.isEnabled()
+    assert not window.aoi_stop_input.isEnabled()
+
+    window.aoi_start_input.setValue(2.1)
+    window.aoi_stop_input.setValue(2.7)
 
     assert not window.controls_panel.isHidden()
     assert window.controls_toggle_button.arrowType() == QtCore.Qt.ArrowType.DownArrow
     assert window.aoi_region_item is not None
-    assert window.aoi_region_item.isVisible()
+    assert not window.aoi_region_item.isVisible()
     assert window.marker_line is not None
     assert window.marker_line.isVisible()
     assert not window.marker_table.isHidden()
     assert not window.s21_marker_table.isHidden()
+
+    window.aoi_enabled_checkbox.setChecked(True)
+
+    assert window.aoi_start_input.isEnabled()
+    assert window.aoi_stop_input.isEnabled()
+    assert window.aoi_region_item is not None
+    assert window.aoi_region_item.isVisible()
 
     window.aoi_enabled_checkbox.setChecked(False)
 
@@ -475,7 +490,7 @@ def test_s11_table_shows_aoi_area_as_an_extra_column(
     )
 
     window = TouchstoneViewerWindow([file_path])
-    window.aoi_start_input.setValue(2.0)
+    window.aoi_stop_input.setValue(2.9)
     window.aoi_stop_input.setValue(3.0)
 
     assert [window.marker_table.horizontalHeaderItem(index).text() for index in range(9)] == [
@@ -500,6 +515,82 @@ def test_s11_table_shows_aoi_area_as_an_extra_column(
         "61.11 + j0.00",
         "20.000",
     ]
+
+    window.close()
+
+
+def test_s11_table_shows_one_area_column_per_visible_preset_band(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file_with_content(
+        tmp_path / "aoi_band_columns.s1p",
+        "# GHz S DB R 50\n"
+        "2.0 -10 0\n"
+        "2.5 -20 0\n"
+        "3.0 -30 0\n",
+    )
+    preset_names = iter([("GPS L1", True), ("Galileo E1", True)])
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: next(preset_names),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_start_input.setValue(2.0)
+    window.aoi_stop_input.setValue(2.5)
+    window.save_aoi_preset_button.click()
+    window.aoi_start_input.setValue(2.5)
+    window.aoi_stop_input.setValue(3.0)
+    window.save_aoi_preset_button.click()
+
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["GPS L1"].setChecked(True)
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["Galileo E1"].setChecked(True)
+
+    assert [
+        window.marker_table.horizontalHeaderItem(index).text()
+        for index in range(window.marker_table.columnCount())
+    ] == [
+        "Trace",
+        "Freq",
+        "S11 (dB)",
+        "ΔRef (dB)",
+        "|S11| (lin)",
+        "ΔRef |S11| (lin)",
+        "Angle (deg)",
+        "Z (ohm)",
+        "Galileo E1 Area (|dB|*GHz)",
+        "GPS L1 Area (|dB|*GHz)",
+    ]
+    assert [window.marker_table.item(0, index).text() for index in range(10)] == [
+        "aoi_band_columns",
+        "2.500000",
+        "-20.000",
+        "-",
+        "0.1000",
+        "-",
+        "0.00",
+        "61.11 + j0.00",
+        "12.500",
+        "7.500",
+    ]
+    assert window.marker_table.horizontalHeaderItem(8).background().color().name() == "#f59e0b"
+    assert window.marker_table.horizontalHeaderItem(9).background().color().name() == "#10b981"
+    assert window.marker_table.item(0, 8).background().color().name() == "#f59e0b"
+    assert window.marker_table.item(0, 9).background().color().name() == "#10b981"
 
     window.close()
 
@@ -688,6 +779,7 @@ def test_common_settings_are_persisted_in_yaml_config(
     window = TouchstoneViewerWindow([file_path])
     window.force_light_theme_checkbox.setChecked(True)
     window.frequency_unit_combo.setCurrentText("MHz")
+    window.aoi_enabled_checkbox.setChecked(True)
     window.aoi_start_input.setValue(2400.0)
     window.aoi_stop_input.setValue(2500.0)
     window.marker_frequency_input.setValue(2450.0)
@@ -699,6 +791,7 @@ def test_common_settings_are_persisted_in_yaml_config(
     config_text = config_path.read_text(encoding="utf-8")
     assert 'frequency_unit_mode: "MHz"' in config_text
     assert "force_light_mode: true" in config_text
+    assert "aoi_visible: true" in config_text
     assert "marker_frequency_hz: 2450000000.0" in config_text
     assert "aoi_start_hz: 2400000000.0" in config_text
     assert "aoi_stop_hz: 2500000000.0" in config_text
@@ -707,6 +800,9 @@ def test_common_settings_are_persisted_in_yaml_config(
 
     assert restored_window.force_light_theme_checkbox.isChecked()
     assert restored_window.frequency_unit_combo.currentText() == "MHz"
+    assert not restored_window.aoi_enabled_checkbox.isChecked()
+    assert not restored_window.aoi_start_input.isEnabled()
+    assert not restored_window.aoi_stop_input.isEnabled()
     assert restored_window.aoi_display_unit_label.text() == "MHz"
     assert restored_window.aoi_start_input.value() == pytest.approx(2400.0)
     assert restored_window.aoi_stop_input.value() == pytest.approx(2500.0)
@@ -783,12 +879,249 @@ def test_aoi_presets_can_be_saved_and_reused(
         restored_window.aoi_preset_combo.itemText(index)
         for index in range(restored_window.aoi_preset_combo.count())
     ]
-    assert restored_window.aoi_preset_combo.currentText() == "GNSS L1"
+    assert restored_window.aoi_preset_combo.currentText() == "Custom"
     assert restored_window.aoi_start_input.value() == pytest.approx(2400.0)
     assert restored_window.aoi_stop_input.value() == pytest.approx(2500.0)
     assert restored_window.marker_frequency_input.value() == pytest.approx(2450.0)
 
     restored_window.close()
+
+
+def test_selected_preset_is_reflected_as_a_single_visible_band(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "selected_preset_band.s1p")
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("GPS L1", True),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_start_input.setValue(2.1)
+    window.aoi_stop_input.setValue(2.7)
+    window.save_aoi_preset_button.click()
+
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+
+    assert window.aoi_preset_combo.currentText() == "GPS L1"
+    assert window.aoi_enabled_checkbox.isChecked()
+    assert window.aoi_preset_bands_button.text() == "Bands (1)"
+    assert band_actions["GPS L1"].isChecked()
+    assert band_actions["GPS L1"].isEnabled()
+    assert "GPS L1" in window.aoi_preset_region_items
+    assert window.aoi_region_item is not None
+    assert not window.aoi_region_item.isVisible()
+    assert window.marker_table.horizontalHeaderItem(8).text() == "GPS L1 Area (|dB|*GHz)"
+
+    window.close()
+
+
+def test_preset_combo_switches_single_band_selection_and_custom_clears_it(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "preset_combo_bands.s1p")
+    preset_names = iter([("GNSS L1", True), ("GNSS L5", True)])
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: next(preset_names),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_start_input.setValue(2.1)
+    window.aoi_stop_input.setValue(2.7)
+    window.save_aoi_preset_button.click()
+    window.aoi_start_input.setValue(2.2)
+    window.aoi_stop_input.setValue(2.8)
+    window.save_aoi_preset_button.click()
+
+    def action_state() -> dict[str, bool]:
+        return {
+            action.text(): action.isChecked()
+            for action in window.aoi_preset_bands_menu.actions()
+            if action.isCheckable()
+        }
+
+    assert window.aoi_preset_combo.currentText() == "GNSS L5"
+    assert window.aoi_enabled_checkbox.isChecked()
+    assert action_state() == {"GNSS L1": False, "GNSS L5": True}
+
+    window.aoi_enabled_checkbox.setChecked(False)
+
+    assert not window.aoi_enabled_checkbox.isChecked()
+    assert window.aoi_preset_region_items == {}
+
+    window.aoi_preset_combo.setCurrentText("GNSS L1")
+
+    assert window.aoi_enabled_checkbox.isChecked()
+    assert action_state() == {"GNSS L1": True, "GNSS L5": False}
+    assert window.aoi_preset_bands_button.text() == "Bands (1)"
+
+    window.aoi_preset_combo.setCurrentText("Custom")
+
+    assert action_state() == {"Custom": True, "GNSS L1": False, "GNSS L5": False}
+    assert window.aoi_preset_bands_button.text() == "Bands (1)"
+
+    window.close()
+
+
+def test_custom_band_is_included_with_visible_preset_bands(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file_with_content(
+        tmp_path / "custom_and_preset_bands.s1p",
+        "# GHz S DB R 50\n"
+        "2.0 -10 0\n"
+        "2.2 -15 0\n"
+        "2.4 -20 0\n"
+        "2.6 -25 0\n"
+        "2.8 -30 0\n",
+    )
+    preset_names = iter([("GNSS L1", True), ("GNSS L5", True)])
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: next(preset_names),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_enabled_checkbox.setChecked(True)
+    window.aoi_start_input.setValue(2.1)
+    window.aoi_stop_input.setValue(2.2)
+    window.save_aoi_preset_button.click()
+    window.aoi_start_input.setValue(2.5)
+    window.aoi_stop_input.setValue(2.6)
+    window.save_aoi_preset_button.click()
+
+    window.aoi_preset_combo.setCurrentText("Custom")
+    window.aoi_start_input.setValue(2.3)
+    window.aoi_stop_input.setValue(2.7)
+
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["GNSS L1"].setChecked(True)
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["GNSS L5"].setChecked(True)
+    qapp.processEvents()
+
+    assert {
+        action.text(): action.isChecked()
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    } == {"Custom": True, "GNSS L1": True, "GNSS L5": True}
+    assert window.aoi_preset_bands_button.text() == "Bands (3)"
+    assert [window.marker_table.horizontalHeaderItem(index).text() for index in range(11)] == [
+        "Trace",
+        "Freq",
+        "S11 (dB)",
+        "ΔRef (dB)",
+        "|S11| (lin)",
+        "ΔRef |S11| (lin)",
+        "Angle (deg)",
+        "Z (ohm)",
+        "Custom Area (|dB|*GHz)",
+        "GNSS L1 Area (|dB|*GHz)",
+        "GNSS L5 Area (|dB|*GHz)",
+    ]
+
+    window.close()
+
+
+def test_multiple_aoi_preset_bands_can_be_shown_at_once(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file_with_content(
+        tmp_path / "preset_bands.s1p",
+        "# GHz S MA R 50\n"
+        "1.540 0.50 0\n"
+        "1.580 0.35 0\n"
+        "1.620 0.45 0\n",
+    )
+    preset_names = iter([("GPS L1", True), ("Galileo E1", True)])
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: next(preset_names),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_start_input.setValue(1.574)
+    window.aoi_stop_input.setValue(1.576)
+    window.save_aoi_preset_button.click()
+    window.aoi_start_input.setValue(1.598)
+    window.aoi_stop_input.setValue(1.602)
+    window.save_aoi_preset_button.click()
+
+    window.aoi_enabled_checkbox.setChecked(False)
+
+    assert not window.aoi_enabled_checkbox.isChecked()
+    assert window.aoi_preset_region_items == {}
+    assert window.aoi_preset_label_items == {}
+
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["GPS L1"].setChecked(True)
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["Galileo E1"].setChecked(True)
+    qapp.processEvents()
+
+    assert window.aoi_enabled_checkbox.isChecked()
+    assert window.aoi_preset_bands_button.text() == "Bands (2)"
+    assert set(window.aoi_preset_region_items) == {"GPS L1", "Galileo E1"}
+    assert set(window.aoi_preset_label_items) == {"GPS L1", "Galileo E1"}
+    assert window.aoi_preset_region_items["GPS L1"].getRegion() == pytest.approx([1.574, 1.576])
+    assert window.aoi_preset_region_items["Galileo E1"].getRegion() == pytest.approx(
+        [1.598, 1.602]
+    )
+
+    window.aoi_enabled_checkbox.setChecked(False)
+
+    assert window.aoi_preset_region_items == {}
+    assert window.aoi_preset_label_items == {}
+
+    window.aoi_enabled_checkbox.setChecked(True)
+
+    assert set(window.aoi_preset_region_items) == {"GPS L1", "Galileo E1"}
+
+    window.frequency_unit_combo.setCurrentText("MHz")
+
+    assert window.aoi_preset_region_items["GPS L1"].getRegion() == pytest.approx([1574.0, 1576.0])
+    assert window.aoi_preset_region_items["Galileo E1"].getRegion() == pytest.approx(
+        [1598.0, 1602.0]
+    )
+
+    window.close()
 
 
 def test_aoi_controls_update_region_and_clear_resets_state(
@@ -810,6 +1143,50 @@ def test_aoi_controls_update_region_and_clear_resets_state(
     assert not window.aoi_start_input.isEnabled()
     assert not window.aoi_stop_input.isEnabled()
     assert window.marker_table.rowCount() == 0
+
+    window.close()
+
+
+def test_clear_switches_to_custom_hides_aoi_and_show_restores_custom_region(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "clear_aoi.s1p")
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("GPS L1", True),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_start_input.setValue(2.1)
+    window.aoi_stop_input.setValue(2.7)
+    window.save_aoi_preset_button.click()
+
+    assert window.aoi_region_item is not None
+    assert window.clear_aoi_button.isEnabled()
+    assert "GPS L1" in window.aoi_preset_region_items
+
+    original_region = window.aoi_region_item.getRegion()
+    window.clear_aoi_button.click()
+
+    assert window.aoi_preset_combo.currentText() == "Custom"
+    assert not window.aoi_enabled_checkbox.isChecked()
+    assert window.aoi_region_hz == pytest.approx((2.1e9, 2.7e9))
+    assert window.aoi_region_item is not None
+    assert not window.aoi_region_item.isVisible()
+    assert window.clear_aoi_button.isEnabled()
+    assert "GPS L1" not in window.aoi_preset_region_items
+    assert window.aoi_preset_bands_button.text() == "Bands"
+    assert window.marker_table.horizontalHeaderItem(8).text() == "AOI Area (|dB|*GHz)"
+
+    window.aoi_enabled_checkbox.setChecked(True)
+
+    assert window.aoi_region_item is not None
+    assert window.aoi_region_item.isVisible()
+    assert window.aoi_region_item.getRegion() == pytest.approx(original_region)
 
     window.close()
 

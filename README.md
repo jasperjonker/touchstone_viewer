@@ -27,9 +27,13 @@ It is designed for quick antenna and matching-network inspection with:
 - Override the plotted frequency unit with `Hz`, `kHz`, `MHz`, or `GHz`.
 - Force a light application theme from the top-right header when the OS palette is too dark.
 - Define an area of interest with start/stop fields that follow the current `Freq` unit.
+- Start with the AOI hidden on launch and enable it only when you want to show the editable band.
+- Clear the active blue AOI when you want only preset guide bands without a separate editable band.
 - Toggle the area-of-interest band on or off without losing its saved frequency range.
 - Show AOI area directly in the `S11` marker table as an extra column.
 - Save named AOI presets such as `GNSS L1` or `GNSS L5`, including the marker frequency, and reapply them quickly.
+- Show multiple saved AOI presets as named overlay bands on the `S11` plot at the same time.
+- When `Bands` are enabled, the `S11` table adds one AOI-area column per visible preset band.
 - Toggle a shared threshold line on or off and adjust its dB value for both S11 and S21.
 - Toggle the marker overlay and marker tables on or off.
 - Type an exact marker frequency instead of dragging the line by hand.
@@ -124,10 +128,15 @@ The project currently enforces a minimum total coverage of `80%`.
 - Use `View` -> `Freq` if you want a fixed x-axis unit instead of the automatic choice.
 - Drag the vertical marker on the `S11` or `S21` plot, or click on either plot, to update the marker position.
 - Use `Marker` -> `At` to type an exact marker frequency in the current plot unit.
-- Use `Area of Interest` -> `Show` to enable or hide the shaded S11 band.
+- Use `Area of Interest` -> `Show` to enable or hide the editable custom S11 band.
+- The AOI `Show` toggle starts unchecked on launch, even when the last custom AOI range is still restored.
+- Selecting an AOI preset from `Preset` or enabling one from `Bands` turns `Show` on automatically.
 - Enter the area-of-interest start and stop values in the same unit selected by `View` -> `Freq`.
+- Use `Clear` to switch back to `Custom` and turn `Show` off while keeping that custom AOI ready to show again.
 - Use the AOI `Preset` combo plus `Save`/`Delete` to manage named AOI ranges and marker positions.
-- The `S11` marker table includes an `AOI Area` column that integrates `|S11 (dB)|` across the selected AOI.
+- The AOI preset combo starts from `Custom`; selecting a preset enables only that preset band, and switching back to `Custom` makes the custom band the active selection again.
+- Use `Bands` to toggle the current `Custom` AOI together with any saved presets on the `S11` plot.
+- The `S11` marker table includes an `AOI Area` column for the active AOI, or one area column per visible band when `Bands` are enabled, with matching tint colors.
 - Use `Threshold` -> `Show` to enable the horizontal reference line on both plots.
 - Adjust the `Threshold` value to move that line, for example `10 dB` to show the `-10 dB` reference.
 - Use `Marker` -> `Show` to enable or hide the vertical marker lines and marker tables.
