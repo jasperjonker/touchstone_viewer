@@ -703,26 +703,33 @@ def test_aoi_presets_can_be_saved_and_reused(
     )
 
     window = TouchstoneViewerWindow([file_path])
+    window.frequency_unit_combo.setCurrentText("MHz")
     window.aoi_unit_combo.setCurrentText("MHz")
     window.aoi_start_input.setValue(2400.0)
     window.aoi_stop_input.setValue(2500.0)
+    window.marker_frequency_input.setValue(2450.0)
     window.save_aoi_preset_button.click()
 
     assert window.aoi_preset_combo.currentText() == "GNSS L1"
 
     window.aoi_start_input.setValue(2600.0)
     window.aoi_stop_input.setValue(2700.0)
+    window.marker_frequency_input.setValue(2650.0)
     window.aoi_preset_combo.setCurrentText("GNSS L1")
 
     assert window.aoi_start_input.value() == pytest.approx(2400.0)
     assert window.aoi_stop_input.value() == pytest.approx(2500.0)
+    assert window.marker_frequency_input.value() == pytest.approx(2450.0)
 
     window.close()
 
-    assert '"GNSS L1":' in config_path.read_text(encoding="utf-8")
+    config_text = config_path.read_text(encoding="utf-8")
+    assert '"GNSS L1":' in config_text
+    assert "marker_frequency_hz: 2450000000.0" in config_text
 
     restored_window = TouchstoneViewerWindow([file_path])
 
+    assert restored_window.frequency_unit_combo.currentText() == "MHz"
     assert "GNSS L1" in [
         restored_window.aoi_preset_combo.itemText(index)
         for index in range(restored_window.aoi_preset_combo.count())
@@ -730,6 +737,7 @@ def test_aoi_presets_can_be_saved_and_reused(
     assert restored_window.aoi_preset_combo.currentText() == "GNSS L1"
     assert restored_window.aoi_start_input.value() == pytest.approx(2400.0)
     assert restored_window.aoi_stop_input.value() == pytest.approx(2500.0)
+    assert restored_window.marker_frequency_input.value() == pytest.approx(2450.0)
 
     restored_window.close()
 

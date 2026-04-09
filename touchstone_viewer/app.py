@@ -129,6 +129,7 @@ class AoiPreset:
     start_hz: float
     stop_hz: float
     unit: str = DEFAULT_AOI_UNIT
+    marker_frequency_hz: float | None = None
 
 
 @dataclass
@@ -1219,13 +1220,15 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         finally:
             self._updating_aoi_controls = False
         self.aoi_region_hz = _sorted_frequency_region_hz((preset.start_hz, preset.stop_hz))
+        if preset.marker_frequency_hz is not None:
+            self.marker_frequency_hz = preset.marker_frequency_hz
         if self._visible_traces():
             self._sync_aoi_controls_to_region()
         else:
             self._reset_aoi_controls()
         self._update_aoi_region_item()
         self._sync_aoi_preset_controls()
-        self._update_marker_table()
+        self._update_marker_outputs()
         self._schedule_user_config_save()
 
     def _handle_aoi_preset_changed(self, index: int) -> None:
@@ -1261,6 +1264,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             start_hz=start_hz,
             stop_hz=stop_hz,
             unit=self.aoi_unit_combo.currentText(),
+            marker_frequency_hz=self.marker_frequency_hz,
         )
         self._selected_aoi_preset_name = preset_name
         self._sync_aoi_preset_controls()
@@ -3094,10 +3098,12 @@ def _load_viewer_user_config() -> ViewerUserConfig:
             preset_unit = preset_data.get("unit")
             if preset_unit not in AOI_UNIT_FACTORS_HZ:
                 preset_unit = DEFAULT_AOI_UNIT
+            preset_marker_frequency_hz = _float_or_none(preset_data.get("marker_frequency_hz"))
             config.aoi_presets[preset_name] = AoiPreset(
                 start_hz=start_hz,
                 stop_hz=stop_hz,
                 unit=str(preset_unit),
+                marker_frequency_hz=preset_marker_frequency_hz,
             )
 
     selected_aoi_preset = raw_config.get("selected_aoi_preset")
@@ -3134,6 +3140,7 @@ def _write_viewer_user_config(config: ViewerUserConfig) -> None:
                 f"    start_hz: {_yaml_scalar(preset.start_hz)}",
                 f"    stop_hz: {_yaml_scalar(preset.stop_hz)}",
                 f"    unit: {_yaml_scalar(preset.unit)}",
+                f"    marker_frequency_hz: {_yaml_scalar(preset.marker_frequency_hz)}",
             ]
         )
 
