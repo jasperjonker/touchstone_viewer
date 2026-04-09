@@ -9,6 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 import pytest
 
 from touchstone_viewer.app import LAST_OPEN_DIRECTORY_KEY, TouchstoneViewerWindow
+from touchstone_viewer.version import __version__
 
 
 class _FakeMimeData:
@@ -113,6 +114,7 @@ def test_window_initial_load_builds_plots(
     assert len(window.traces) == 1
     assert window.marker_line is not None
     assert window.aoi_region_item is None
+    assert window.windowTitle() == f"Touchstone Viewer - v{__version__}"
     assert window.summary_label.text() == "1 trace(s) loaded, 1 visible"
     assert not window.aoi_enabled_checkbox.isChecked()
     assert not window.aoi_start_input.isEnabled()

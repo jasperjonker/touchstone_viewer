@@ -14,6 +14,7 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from .version import __version__
 from .matching import (
     MatchingStage,
     MatchingSuggestion,
@@ -206,7 +207,7 @@ class _SelectAllDoubleSpinBox(QtWidgets.QDoubleSpinBox):
 class TouchstoneViewerWindow(QtWidgets.QMainWindow):
     def __init__(self, initial_paths: Sequence[Path]) -> None:
         super().__init__()
-        self.setWindowTitle("Touchstone Viewer")
+        self.setWindowTitle(f"Touchstone Viewer - v{__version__}")
         self.resize(1500, 920)
         self.setAcceptDrops(True)
         self.settings = QtCore.QSettings("TouchstoneViewer", "Touch")

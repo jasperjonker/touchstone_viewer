@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.5.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "touchstone-viewer"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Interactive S11 and Smith chart viewer for Touchstone .s1p files"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,6 +27,13 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.1.0"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "touchstone_viewer/_version.py"
 
 [tool.coverage.run]
 source = ["touchstone_viewer"]

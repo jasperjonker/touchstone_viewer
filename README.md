@@ -26,6 +26,7 @@ It is designed for quick antenna and matching-network inspection with:
 - Inspect a specific frequency using the movable marker.
 - Open the `Controls` panel when you want to adjust overlays instead of keeping those inputs on screen all the time.
 - Override the plotted frequency unit with `Hz`, `kHz`, `MHz`, or `GHz`.
+- See the running app version directly in the window title bar, sourced from the built package version.
 - Force a light application theme from the top-right header when the OS palette is too dark.
 - Define an area of interest with start/stop fields that follow the current `Freq` unit.
 - Start with the AOI hidden on launch and enable it only when you want to show the editable band.
