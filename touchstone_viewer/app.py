@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -9,6 +10,14 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from .matching import (
+    MatchingStage,
+    MatchingSuggestion,
+    apply_matching_network,
+    component_units,
+    impedance_to_gamma,
+    suggest_matching_stages,
+)
 from .smith import add_smith_grid, reset_smith_view
 from .touchstone import TouchstoneData, gamma_to_impedance, load_touchstone
 
@@ -44,6 +53,17 @@ DEFAULT_CONTROLS_VISIBLE = False
 DEFAULT_AOI_VISIBLE = True
 DEFAULT_MARKER_VISIBLE = True
 DEFAULT_FREQUENCY_UNIT_MODE = "Auto"
+MATCHING_STAGE_TEMPLATES = [
+    ("Series", "L", "nH"),
+    ("Shunt", "C", "pF"),
+    ("Series", "C", "pF"),
+    ("Shunt", "L", "nH"),
+]
+MATCHING_DEFAULT_NETWORK = [
+    ("Shunt", "C", "pF", 0.0, False),
+    ("Series", "R", "ohm", 0.0, True),
+    ("Shunt", "C", "pF", 0.0, False),
+]
 
 
 @dataclass(frozen=True)
@@ -63,6 +83,39 @@ class LoadedTrace:
     s11_marker: pg.ScatterPlotItem | None = None
     smith_marker: pg.ScatterPlotItem | None = None
     s21_marker: pg.ScatterPlotItem | None = None
+
+
+@dataclass
+class MatchingStageControls:
+    row_widget: QtWidgets.QWidget
+    stage_label: QtWidgets.QLabel
+    enabled_checkbox: QtWidgets.QCheckBox
+    topology_combo: QtWidgets.QComboBox
+    component_combo: QtWidgets.QComboBox
+    value_input: QtWidgets.QDoubleSpinBox
+    unit_combo: QtWidgets.QComboBox
+    remove_button: QtWidgets.QPushButton
+
+
+@dataclass(frozen=True)
+class _DbPlotViewState:
+    x_range_hz: tuple[float, float]
+    y_range: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class _PlotViewState:
+    x_range: tuple[float, float]
+    y_range: tuple[float, float]
+
+
+@dataclass(frozen=True)
+class _ViewerViewState:
+    s11: _DbPlotViewState | None = None
+    s21: _DbPlotViewState | None = None
+    smith: _PlotViewState | None = None
+    match_s11: _DbPlotViewState | None = None
+    match_smith: _PlotViewState | None = None
 
 
 class _SortableTableWidgetItem(QtWidgets.QTableWidgetItem):
@@ -95,12 +148,30 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.aoi_region_item: pg.LinearRegionItem | None = None
         self.s11_threshold_line: pg.InfiniteLine | None = None
         self.s21_threshold_line: pg.InfiniteLine | None = None
+        self.match_trace_path: Path | None = None
+        self.matching_stage_controls: list[MatchingStageControls] = []
+        self.matching_suggestions: list[MatchingSuggestion] = []
+        self.match_marker_frequency_hz: float | None = None
+        self.match_original_gamma: np.ndarray | None = None
+        self.match_transformed_gamma: np.ndarray | None = None
+        self.match_original_s11_db: np.ndarray | None = None
+        self.match_transformed_s11_db: np.ndarray | None = None
+        self.match_frequencies_hz: np.ndarray | None = None
+        self.match_s11_original_marker: pg.ScatterPlotItem | None = None
+        self.match_s11_transformed_marker: pg.ScatterPlotItem | None = None
+        self.match_smith_original_marker: pg.ScatterPlotItem | None = None
+        self.match_smith_transformed_marker: pg.ScatterPlotItem | None = None
+        self.match_s11_marker_line: pg.InfiniteLine | None = None
+        self.match_marker_plot_label: pg.TextItem | None = None
         self._updating_marker = False
         self._updating_marker_controls = False
         self._updating_aoi_controls = False
         self._updating_trace_controls = False
+        self._updating_matching_controls = False
+        self._updating_match_target_controls = False
 
         self._build_ui()
+        self._restore_default_matching_network()
         self._refresh_plots()
 
         if initial_paths:
@@ -154,6 +225,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.tab_widget = QtWidgets.QTabWidget()
         self.tab_widget.addTab(self._build_s11_tab(), "S11")
         self.tab_widget.addTab(self._build_s21_tab(), "S21")
+        self.tab_widget.addTab(self._build_match_tab(), "Match")
         layout.addWidget(self.tab_widget, stretch=1)
 
         self.setCentralWidget(central_widget)
@@ -409,6 +481,240 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         finally:
             self._updating_trace_controls = False
 
+    def _matching_trace(self) -> LoadedTrace | None:
+        for trace in self.traces:
+            if trace.data.path == self.match_trace_path:
+                return trace
+        return self.traces[0] if self.traces else None
+
+    def _matching_stage_template(self, index: int) -> tuple[str, str, str]:
+        return MATCHING_STAGE_TEMPLATES[index % len(MATCHING_STAGE_TEMPLATES)]
+
+    def _sync_matching_controls(self) -> None:
+        if self._updating_matching_controls:
+            return
+
+        self._updating_matching_controls = True
+        try:
+            valid_paths = {trace.data.path for trace in self.traces}
+            if self.match_trace_path not in valid_paths:
+                self.match_trace_path = self.traces[0].data.path if self.traces else None
+
+            self.match_trace_combo.blockSignals(True)
+            self.match_trace_combo.clear()
+            for trace in self.traces:
+                self.match_trace_combo.addItem(trace.data.label, str(trace.data.path))
+            if self.match_trace_path is not None:
+                index = self.match_trace_combo.findData(str(self.match_trace_path))
+                self.match_trace_combo.setCurrentIndex(index if index >= 0 else 0)
+            self.match_trace_combo.blockSignals(False)
+
+            has_traces = bool(self.traces)
+            self.match_trace_combo.setEnabled(has_traces)
+            self.match_target_frequency_input.setEnabled(has_traces)
+            self.add_matching_stage_button.setEnabled(has_traces)
+            self.reset_matching_button.setEnabled(has_traces)
+            self.apply_matching_suggestion_button.setEnabled(
+                has_traces and bool(self.match_suggestion_table.selectedItems())
+            )
+            self.match_suggestion_table.setEnabled(has_traces)
+            for stage_controls in self.matching_stage_controls:
+                stage_controls.enabled_checkbox.setEnabled(has_traces)
+                stage_controls.topology_combo.setEnabled(has_traces)
+                stage_controls.component_combo.setEnabled(has_traces)
+                stage_controls.value_input.setEnabled(has_traces)
+                stage_controls.unit_combo.setEnabled(has_traces)
+                stage_controls.remove_button.setEnabled(has_traces)
+            self._sync_match_target_frequency_input()
+            self._update_matching_stage_row_labels()
+            self.match_empty_stages_label.setVisible(not self.matching_stage_controls)
+        finally:
+            self._updating_matching_controls = False
+
+    def _handle_match_trace_changed(self, index: int) -> None:
+        if self._updating_matching_controls:
+            return
+        path_value = self.match_trace_combo.itemData(index)
+        self.match_trace_path = Path(path_value) if path_value else None
+        self._refresh_matching_tab()
+
+    def _handle_match_target_frequency_changed(self, value: float) -> None:
+        if self._updating_match_target_controls:
+            return
+
+        self.marker_frequency_hz = value * self.frequency_scale.factor_hz
+        self._set_marker_line_values(self.marker_frequency_hz)
+        self._update_marker_outputs()
+
+    def _handle_matching_component_changed(self, stage_controls: MatchingStageControls) -> None:
+        self._sync_matching_stage_units(stage_controls, stage_controls.component_combo.currentText())
+        self._refresh_matching_tab()
+
+    def _sync_matching_stage_units(
+        self,
+        stage_controls: MatchingStageControls,
+        component: str,
+        *,
+        preferred_unit: str | None = None,
+    ) -> None:
+        units = component_units(component)
+        if preferred_unit not in units:
+            preferred_unit = (
+                stage_controls.unit_combo.currentText()
+                if stage_controls.unit_combo.currentText() in units
+                else units[0]
+            )
+        stage_controls.unit_combo.blockSignals(True)
+        stage_controls.unit_combo.clear()
+        stage_controls.unit_combo.addItems(units)
+        stage_controls.unit_combo.setCurrentText(preferred_unit)
+        stage_controls.unit_combo.blockSignals(False)
+
+    def _matching_target_frequency_hz(self) -> float | None:
+        trace = self._matching_trace()
+        if trace is None:
+            return None
+
+        minimum_hz = float(trace.data.frequencies_hz[0])
+        maximum_hz = float(trace.data.frequencies_hz[-1])
+        if self.marker_frequency_hz is None:
+            return self._default_matching_marker_frequency(trace.data.frequencies_hz)
+        return min(max(self.marker_frequency_hz, minimum_hz), maximum_hz)
+
+    def _sync_match_target_frequency_input(self) -> None:
+        trace = self._matching_trace()
+        self._updating_match_target_controls = True
+        try:
+            self.match_target_frequency_input.setEnabled(trace is not None)
+            self.match_target_frequency_input.setSuffix(f" {self.frequency_scale.unit}")
+            if trace is None:
+                self.match_target_frequency_input.setRange(0.0, 0.0)
+                self.match_target_frequency_input.setValue(0.0)
+                return
+
+            minimum_hz = float(trace.data.frequencies_hz[0])
+            maximum_hz = float(trace.data.frequencies_hz[-1])
+            display_bounds = (
+                minimum_hz / self.frequency_scale.factor_hz,
+                maximum_hz / self.frequency_scale.factor_hz,
+            )
+            step_size = max((display_bounds[1] - display_bounds[0]) / 200.0, 1.0e-6)
+            self.match_target_frequency_input.setRange(display_bounds[0], display_bounds[1])
+            self.match_target_frequency_input.setSingleStep(step_size)
+            target_frequency_hz = self._matching_target_frequency_hz()
+            if target_frequency_hz is None:
+                self.match_target_frequency_input.setValue(0.0)
+            else:
+                self.match_target_frequency_input.setValue(
+                    target_frequency_hz / self.frequency_scale.factor_hz
+                )
+        finally:
+            self._updating_match_target_controls = False
+
+    def _handle_matching_network_changed(self, *_args: object) -> None:
+        if self._updating_matching_controls:
+            return
+        self._refresh_matching_tab()
+
+    def _handle_matching_suggestion_selection_changed(self) -> None:
+        self.apply_matching_suggestion_button.setEnabled(
+            bool(self.traces) and bool(self.match_suggestion_table.selectedItems())
+        )
+
+    def _append_selected_matching_suggestion(self) -> None:
+        selection_model = self.match_suggestion_table.selectionModel()
+        if selection_model is None or not selection_model.hasSelection():
+            return
+
+        row = selection_model.selectedRows()[0].row()
+        if row < 0 or row >= len(self.matching_suggestions):
+            return
+
+        self._append_matching_stage(stage=self.matching_suggestions[row].stage)
+
+    def _handle_add_matching_stage_clicked(self) -> None:
+        self._append_matching_stage()
+
+    def _append_matching_stage(self, *, stage: MatchingStage | None = None) -> MatchingStageControls:
+        if stage is None:
+            default_topology, default_component, default_unit = self._matching_stage_template(
+                len(self.matching_stage_controls)
+            )
+            stage = MatchingStage(
+                topology=default_topology,
+                component=default_component,
+                value=0.0,
+                unit=default_unit,
+                enabled=False,
+            )
+
+        stage_controls = self._build_matching_stage_controls(
+            stage.topology,
+            stage.component,
+            stage.unit,
+            value=stage.value,
+            enabled=stage.enabled,
+        )
+        self.matching_stage_controls.append(stage_controls)
+        self.match_stage_rows_layout.addWidget(stage_controls.row_widget)
+        self._sync_matching_controls()
+        self._refresh_matching_tab()
+        return stage_controls
+
+    def _remove_matching_stage(self, stage_controls: MatchingStageControls) -> None:
+        if stage_controls not in self.matching_stage_controls:
+            return
+
+        self.matching_stage_controls.remove(stage_controls)
+        stage_controls.row_widget.setParent(None)
+        stage_controls.row_widget.deleteLater()
+        self._sync_matching_controls()
+        self._refresh_matching_tab()
+
+    def _update_matching_stage_row_labels(self) -> None:
+        for index, stage_controls in enumerate(self.matching_stage_controls, start=1):
+            stage_controls.stage_label.setText(str(index))
+
+    def _matching_stages(self) -> list[MatchingStage]:
+        stages: list[MatchingStage] = []
+        for stage_controls in self.matching_stage_controls:
+            stages.append(
+                MatchingStage(
+                    topology=stage_controls.topology_combo.currentText(),
+                    component=stage_controls.component_combo.currentText(),
+                    value=float(stage_controls.value_input.value()),
+                    unit=stage_controls.unit_combo.currentText(),
+                    enabled=stage_controls.enabled_checkbox.isChecked(),
+                )
+            )
+        return stages
+
+    def _reset_matching_network(self) -> None:
+        self._restore_default_matching_network()
+        self.matching_suggestions = []
+        self.match_suggestion_table.setRowCount(0)
+        self.match_suggestion_label.setText(
+            "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+        )
+        self._sync_matching_controls()
+        self._refresh_matching_tab()
+
+    def _restore_default_matching_network(self) -> None:
+        while self.matching_stage_controls:
+            stage_controls = self.matching_stage_controls.pop()
+            stage_controls.row_widget.setParent(None)
+            stage_controls.row_widget.deleteLater()
+        for topology, component, unit, value, enabled in MATCHING_DEFAULT_NETWORK:
+            self._append_matching_stage(
+                stage=MatchingStage(
+                    topology=topology,
+                    component=component,
+                    value=value,
+                    unit=unit,
+                    enabled=enabled,
+                )
+            )
+
     def _build_s11_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
@@ -479,6 +785,245 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         return tab
 
+    def _build_match_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        controls_frame = QtWidgets.QFrame()
+        controls_frame.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
+        controls_layout = QtWidgets.QVBoxLayout(controls_frame)
+        controls_layout.setContentsMargins(10, 10, 10, 10)
+        controls_layout.setSpacing(8)
+
+        trace_row = QtWidgets.QHBoxLayout()
+        trace_row.setSpacing(8)
+        trace_row.addWidget(QtWidgets.QLabel("Trace"))
+
+        self.match_trace_combo = QtWidgets.QComboBox()
+        self.match_trace_combo.setMinimumWidth(280)
+        self.match_trace_combo.currentIndexChanged.connect(self._handle_match_trace_changed)
+        trace_row.addWidget(self.match_trace_combo)
+
+        trace_row.addWidget(QtWidgets.QLabel("Target"))
+
+        self.match_target_frequency_input = QtWidgets.QDoubleSpinBox()
+        self.match_target_frequency_input.setDecimals(6)
+        self.match_target_frequency_input.setMinimumWidth(150)
+        self.match_target_frequency_input.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        self.match_target_frequency_input.setKeyboardTracking(False)
+        self.match_target_frequency_input.setButtonSymbols(
+            QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons
+        )
+        self.match_target_frequency_input.valueChanged.connect(
+            self._handle_match_target_frequency_changed
+        )
+        trace_row.addWidget(self.match_target_frequency_input)
+
+        self.add_matching_stage_button = QtWidgets.QPushButton("Add Stage")
+        self.add_matching_stage_button.clicked.connect(self._handle_add_matching_stage_clicked)
+        trace_row.addWidget(self.add_matching_stage_button)
+
+        self.reset_matching_button = QtWidgets.QPushButton("Reset Network")
+        self.reset_matching_button.clicked.connect(self._reset_matching_network)
+        trace_row.addWidget(self.reset_matching_button)
+        trace_row.addStretch(1)
+
+        self.match_order_label = QtWidgets.QLabel(
+            "Order is top to bottom: antenna/load -> coax/feed. The first row is closest to the antenna. Added stages and suggestions append at the bottom, closest to the feed."
+        )
+        self.match_order_label.setStyleSheet("color: #475569;")
+        controls_layout.addLayout(trace_row)
+        controls_layout.addWidget(self.match_order_label)
+
+        headers_row = QtWidgets.QHBoxLayout()
+        headers_row.setSpacing(10)
+        headers = ["Stage", "Use", "Topology", "Part", "Value", "Unit", ""]
+        stretches = [0, 0, 0, 0, 0, 0, 1]
+        for header, stretch in zip(headers, stretches, strict=False):
+            label = QtWidgets.QLabel(header)
+            font = label.font()
+            font.setBold(True)
+            label.setFont(font)
+            headers_row.addWidget(label, stretch=stretch)
+        controls_layout.addLayout(headers_row)
+
+        stages_scroll = QtWidgets.QScrollArea()
+        stages_scroll.setWidgetResizable(True)
+        stages_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        stages_scroll.setMaximumHeight(190)
+        self.match_stage_rows_container = QtWidgets.QWidget()
+        self.match_stage_rows_layout = QtWidgets.QVBoxLayout(self.match_stage_rows_container)
+        self.match_stage_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.match_stage_rows_layout.setSpacing(6)
+
+        self.match_empty_stages_label = QtWidgets.QLabel(
+            "No stages added yet. Use Add Stage or append one from the suggestions below."
+        )
+        self.match_empty_stages_label.setStyleSheet("color: #64748b;")
+        self.match_stage_rows_layout.addWidget(self.match_empty_stages_label)
+        stages_scroll.setWidget(self.match_stage_rows_container)
+        controls_layout.addWidget(stages_scroll)
+
+        suggestions_header = QtWidgets.QHBoxLayout()
+        suggestions_header.setSpacing(8)
+        suggestions_prefix = QtWidgets.QLabel("Reactive Suggestions")
+        suggestions_header.addWidget(suggestions_prefix)
+        suggestions_header.addStretch(1)
+        self.apply_matching_suggestion_button = QtWidgets.QPushButton("Append Suggestion")
+        self.apply_matching_suggestion_button.clicked.connect(
+            self._append_selected_matching_suggestion
+        )
+        suggestions_header.addWidget(self.apply_matching_suggestion_button)
+        controls_layout.addLayout(suggestions_header)
+
+        self.match_suggestion_table = QtWidgets.QTableWidget(0, 5)
+        self.match_suggestion_table.setHorizontalHeaderLabels(
+            [
+                "Next Stage",
+                "Value",
+                "Result S11 (dB)",
+                "Improve (dB)",
+                "Result Z (ohm)",
+            ]
+        )
+        self.match_suggestion_table.verticalHeader().setVisible(False)
+        self.match_suggestion_table.setAlternatingRowColors(True)
+        self.match_suggestion_table.setEditTriggers(
+            QtWidgets.QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.match_suggestion_table.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.match_suggestion_table.setSelectionMode(
+            QtWidgets.QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.match_suggestion_table.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.match_suggestion_table.setMinimumHeight(180)
+        suggestion_header = self.match_suggestion_table.horizontalHeader()
+        suggestion_header.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        suggestion_header.setSectionResizeMode(1, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        suggestion_header.setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        suggestion_header.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeMode.ResizeToContents)
+        suggestion_header.setSectionResizeMode(4, QtWidgets.QHeaderView.ResizeMode.Stretch)
+        self.match_suggestion_table.itemSelectionChanged.connect(
+            self._handle_matching_suggestion_selection_changed
+        )
+        self.match_suggestion_table.itemDoubleClicked.connect(
+            lambda _item: self._append_selected_matching_suggestion()
+        )
+        controls_layout.addWidget(self.match_suggestion_table)
+
+        self.match_suggestion_label = QtWidgets.QLabel(
+            "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+        )
+        self.match_suggestion_label.setStyleSheet("color: #64748b;")
+        controls_layout.addWidget(self.match_suggestion_label)
+        layout.addWidget(controls_frame)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+
+        self.match_s11_plot = pg.PlotWidget()
+        self.match_s11_plot.scene().sigMouseClicked.connect(
+            lambda event: self._handle_plot_click(self.match_s11_plot, event)
+        )
+        self.match_s11_plot.getPlotItem().vb.sigRangeChanged.connect(
+            self._update_match_marker_plot_label_position
+        )
+        splitter.addWidget(self.match_s11_plot)
+
+        self.match_smith_plot = pg.PlotWidget()
+        splitter.addWidget(self.match_smith_plot)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, stretch=1)
+
+        self.match_summary_label = QtWidgets.QLabel("Load a trace to preview a matching network.")
+        self.match_summary_label.setStyleSheet("color: #334155;")
+        layout.addWidget(self.match_summary_label)
+
+        return tab
+
+    def _build_matching_stage_controls(
+        self,
+        default_topology: str,
+        default_component: str,
+        default_unit: str,
+        *,
+        value: float = 0.0,
+        enabled: bool = False,
+    ) -> MatchingStageControls:
+        row_widget = QtWidgets.QWidget()
+        row_layout = QtWidgets.QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(10)
+
+        stage_label = QtWidgets.QLabel("?")
+        stage_label.setMinimumWidth(38)
+        stage_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        row_layout.addWidget(stage_label)
+
+        enabled_checkbox = QtWidgets.QCheckBox()
+        row_layout.addWidget(enabled_checkbox)
+
+        topology_combo = QtWidgets.QComboBox()
+        topology_combo.addItems(["Series", "Shunt"])
+        topology_combo.setCurrentText(default_topology)
+        row_layout.addWidget(topology_combo)
+
+        component_combo = QtWidgets.QComboBox()
+        component_combo.addItems(["R", "L", "C"])
+        component_combo.setCurrentText(default_component)
+        row_layout.addWidget(component_combo)
+
+        value_input = QtWidgets.QDoubleSpinBox()
+        value_input.setDecimals(6)
+        value_input.setRange(0.0, 1.0e9)
+        value_input.setSingleStep(0.1)
+        value_input.setMinimumWidth(110)
+        value_input.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight)
+        value_input.setKeyboardTracking(False)
+        value_input.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
+        value_input.setValue(value)
+        row_layout.addWidget(value_input)
+
+        unit_combo = QtWidgets.QComboBox()
+        row_layout.addWidget(unit_combo)
+
+        remove_button = QtWidgets.QPushButton("Remove")
+        remove_button.setAutoDefault(False)
+        row_layout.addWidget(remove_button)
+
+        controls = MatchingStageControls(
+            row_widget=row_widget,
+            stage_label=stage_label,
+            enabled_checkbox=enabled_checkbox,
+            topology_combo=topology_combo,
+            component_combo=component_combo,
+            value_input=value_input,
+            unit_combo=unit_combo,
+            remove_button=remove_button,
+        )
+        self._sync_matching_stage_units(controls, default_component, preferred_unit=default_unit)
+        enabled_checkbox.setChecked(enabled)
+
+        enabled_checkbox.toggled.connect(self._handle_matching_network_changed)
+        topology_combo.currentTextChanged.connect(self._handle_matching_network_changed)
+        value_input.valueChanged.connect(self._handle_matching_network_changed)
+        unit_combo.currentTextChanged.connect(self._handle_matching_network_changed)
+        component_combo.currentTextChanged.connect(
+            lambda _text, stage_controls=controls: self._handle_matching_component_changed(
+                stage_controls
+            )
+        )
+        remove_button.clicked.connect(
+            lambda _checked=False, stage_controls=controls: self._remove_matching_stage(
+                stage_controls
+            )
+        )
+        return controls
+
     def _build_marker_table(self, headers: list[str]) -> QtWidgets.QTableWidget:
         table = QtWidgets.QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
@@ -516,7 +1061,97 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             QtCore.Qt.ArrowType.DownArrow if visible else QtCore.Qt.ArrowType.RightArrow
         )
 
-    def _refresh_plots(self) -> None:
+    def _capture_view_state(self) -> _ViewerViewState:
+        return _ViewerViewState(
+            s11=self._capture_db_plot_view_state(self.s11_plot),
+            s21=self._capture_db_plot_view_state(self.s21_plot),
+            smith=self._capture_plot_view_state(self.smith_plot),
+            match_s11=self._capture_db_plot_view_state(self.match_s11_plot),
+            match_smith=self._capture_plot_view_state(self.match_smith_plot),
+        )
+
+    def _capture_db_plot_view_state(self, plot_widget: pg.PlotWidget) -> _DbPlotViewState:
+        x_range, y_range = plot_widget.getPlotItem().viewRange()
+        return _DbPlotViewState(
+            x_range_hz=(
+                x_range[0] * self.frequency_scale.factor_hz,
+                x_range[1] * self.frequency_scale.factor_hz,
+            ),
+            y_range=(y_range[0], y_range[1]),
+        )
+
+    def _capture_plot_view_state(self, plot_widget: pg.PlotWidget) -> _PlotViewState:
+        x_range, y_range = plot_widget.getPlotItem().viewRange()
+        return _PlotViewState(
+            x_range=(x_range[0], x_range[1]),
+            y_range=(y_range[0], y_range[1]),
+        )
+
+    def _restore_view_state(self, view_state: _ViewerViewState) -> None:
+        bounds_hz = self._frequency_span_hz()
+        if bounds_hz is not None:
+            self._restore_db_plot_view_state(self.s11_plot, view_state.s11, bounds_hz)
+            self._restore_db_plot_view_state(self.s21_plot, view_state.s21, bounds_hz)
+
+        self._restore_plot_view_state(self.smith_plot, view_state.smith)
+
+        if self.match_frequencies_hz is not None:
+            self._restore_db_plot_view_state(
+                self.match_s11_plot,
+                view_state.match_s11,
+                (float(self.match_frequencies_hz[0]), float(self.match_frequencies_hz[-1])),
+            )
+
+        self._restore_plot_view_state(self.match_smith_plot, view_state.match_smith)
+        self._update_marker_plot_label_position()
+        self._update_s21_marker_plot_label_position()
+        self._update_match_marker_plot_label_position()
+
+    def _restore_db_plot_view_state(
+        self,
+        plot_widget: pg.PlotWidget,
+        view_state: _DbPlotViewState | None,
+        bounds_hz: tuple[float, float],
+    ) -> None:
+        if view_state is None:
+            return
+
+        x_range_hz = _clamp_frequency_region_hz(view_state.x_range_hz, bounds_hz)
+        plot_item = plot_widget.getPlotItem()
+        plot_item.setXRange(
+            x_range_hz[0] / self.frequency_scale.factor_hz,
+            x_range_hz[1] / self.frequency_scale.factor_hz,
+            padding=0.0,
+        )
+        self._restore_y_range(plot_item, view_state.y_range)
+
+    def _restore_plot_view_state(
+        self,
+        plot_widget: pg.PlotWidget,
+        view_state: _PlotViewState | None,
+    ) -> None:
+        if view_state is None:
+            return
+
+        plot_item = plot_widget.getPlotItem()
+        plot_item.setXRange(view_state.x_range[0], view_state.x_range[1], padding=0.0)
+        self._restore_y_range(plot_item, view_state.y_range)
+
+    def _restore_y_range(
+        self,
+        plot_item: pg.PlotItem,
+        y_range: tuple[float, float],
+    ) -> None:
+        minimum_y, maximum_y = y_range
+        if not np.isfinite(minimum_y) or not np.isfinite(maximum_y):
+            return
+        if np.isclose(minimum_y, maximum_y):
+            delta = max(abs(minimum_y) * 0.01, 1.0)
+            minimum_y -= delta
+            maximum_y += delta
+        plot_item.setYRange(minimum_y, maximum_y, padding=0.0)
+
+    def _refresh_plots(self, *, preserve_view_state: _ViewerViewState | None = None) -> None:
         visible_traces = self._visible_traces()
         self._choose_frequency_scale()
 
@@ -570,8 +1205,12 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             self._reset_aoi_controls()
 
         self._sync_trace_controls()
+        self._sync_matching_controls()
         self._sync_control_states()
+        self._refresh_matching_tab()
         self._update_marker_outputs()
+        if preserve_view_state is not None:
+            self._restore_view_state(preserve_view_state)
         self.summary_label.setText(
             f"{len(self.traces)} trace(s) loaded, {len(visible_traces)} visible"
         )
@@ -629,16 +1268,37 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             [trace.data.s21_db() for trace in visible_traces if trace.data.has_parameter(2, 1)],
         )
         reset_smith_view(self.smith_plot.getPlotItem())
+        if self.match_frequencies_hz is not None:
+            self._reset_db_plot_view(
+                self.match_s11_plot,
+                [
+                    self.match_original_s11_db
+                    if self.match_original_s11_db is not None
+                    else np.asarray([], dtype=np.float64),
+                    self.match_transformed_s11_db
+                    if self.match_transformed_s11_db is not None
+                    else np.asarray([], dtype=np.float64),
+                ],
+                frequency_span_hz=(
+                    float(self.match_frequencies_hz[0]),
+                    float(self.match_frequencies_hz[-1]),
+                ),
+            )
+        reset_smith_view(self.match_smith_plot.getPlotItem())
         self._update_marker_plot_label_position()
         self._update_s21_marker_plot_label_position()
+        self._update_match_marker_plot_label_position()
 
     def _reset_db_plot_view(
         self,
         plot_widget: pg.PlotWidget,
         y_data_sets: Sequence[np.ndarray],
+        *,
+        frequency_span_hz: tuple[float, float] | None = None,
     ) -> None:
         plot_item = plot_widget.getPlotItem()
-        frequency_span_hz = self._frequency_span_hz()
+        if frequency_span_hz is None:
+            frequency_span_hz = self._frequency_span_hz()
         if frequency_span_hz is None:
             plot_item.setXRange(0.0, 1.0, padding=0.0)
         else:
@@ -658,6 +1318,132 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             min_y -= 1.0
             max_y += 1.0
         plot_item.setYRange(min_y, max_y, padding=0.0)
+
+    def _configure_match_s11_plot(self) -> None:
+        plot_item = self.match_s11_plot.getPlotItem()
+        plot_item.setTitle("Matched S11 Over Frequency")
+        plot_item.setLabel("left", "S11 (dB)")
+        plot_item.setLabel("bottom", f"Frequency ({self.frequency_scale.unit})")
+        plot_item.showGrid(x=True, y=True, alpha=0.18)
+        plot_item.addLegend(labelTextColor="#24313f", brush="#ffffffdd")
+        self.match_s11_plot.setMouseEnabled(x=True, y=True)
+        if self.match_frequencies_hz is None:
+            plot_item.setYRange(*DEFAULT_EMPTY_DB_RANGE, padding=0.0)
+
+        self.match_marker_plot_label = self._build_marker_plot_label()
+        self.match_s11_plot.addItem(self.match_marker_plot_label, ignoreBounds=True)
+        self._update_match_marker_plot_label_position()
+
+    def _configure_match_smith_plot(self) -> None:
+        plot_item = self.match_smith_plot.getPlotItem()
+        plot_item.setTitle("Matched Smith Chart")
+        self.match_smith_plot.setMouseEnabled(x=True, y=True)
+        add_smith_grid(plot_item)
+        plot_item.addLegend(labelTextColor="#24313f", brush="#ffffffdd")
+
+    def _refresh_matching_tab(self) -> None:
+        self.match_s11_plot.clear()
+        self.match_smith_plot.clear()
+        self.match_marker_plot_label = None
+        self.match_s11_marker_line = None
+        self.match_s11_original_marker = None
+        self.match_s11_transformed_marker = None
+        self.match_smith_original_marker = None
+        self.match_smith_transformed_marker = None
+        self.match_original_gamma = None
+        self.match_transformed_gamma = None
+        self.match_original_s11_db = None
+        self.match_transformed_s11_db = None
+        self.match_frequencies_hz = None
+        self.match_marker_frequency_hz = None
+
+        self._configure_match_s11_plot()
+        self._configure_match_smith_plot()
+
+        trace = self._matching_trace()
+        if trace is None:
+            self.matching_suggestions = []
+            self.match_suggestion_table.setRowCount(0)
+            self.match_suggestion_label.setText(
+                "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+            )
+            self.match_summary_label.setText("Load a trace to preview a matching network.")
+            return
+
+        frequencies_hz = trace.data.frequencies_hz
+        transformed_impedance = apply_matching_network(
+            trace.data.impedance_ohms(),
+            frequencies_hz,
+            self._matching_stages(),
+        )
+        transformed_gamma = impedance_to_gamma(
+            transformed_impedance,
+            trace.data.reference_impedance_ohms,
+        )
+        transformed_s11_db = 20.0 * np.log10(np.maximum(np.abs(transformed_gamma), 1.0e-12))
+
+        self.match_frequencies_hz = frequencies_hz
+        self.match_original_gamma = trace.data.gamma
+        self.match_transformed_gamma = transformed_gamma
+        self.match_original_s11_db = trace.data.s11_db()
+        self.match_transformed_s11_db = transformed_s11_db
+
+        scaled_frequency = frequencies_hz / self.frequency_scale.factor_hz
+        original_pen = pg.mkPen(trace.color, width=2.2)
+        transformed_pen = pg.mkPen("#dc2626", width=2.4)
+
+        self.match_s11_plot.plot(
+            scaled_frequency,
+            self.match_original_s11_db,
+            pen=original_pen,
+            name=f"{trace.data.label} original",
+        )
+        self.match_s11_plot.plot(
+            scaled_frequency,
+            self.match_transformed_s11_db,
+            pen=transformed_pen,
+            name="Matched",
+        )
+        self.match_smith_plot.plot(
+            self.match_original_gamma.real,
+            self.match_original_gamma.imag,
+            pen=original_pen,
+            name=f"{trace.data.label} original",
+        )
+        self.match_smith_plot.plot(
+            self.match_transformed_gamma.real,
+            self.match_transformed_gamma.imag,
+            pen=transformed_pen,
+            name="Matched",
+        )
+
+        self.match_s11_original_marker = self._build_marker_scatter(trace.color, size=10)
+        self.match_s11_transformed_marker = self._build_marker_scatter("#dc2626", size=10)
+        self.match_smith_original_marker = self._build_marker_scatter(trace.color, size=11)
+        self.match_smith_transformed_marker = self._build_marker_scatter("#dc2626", size=11)
+        self.match_s11_plot.addItem(self.match_s11_original_marker)
+        self.match_s11_plot.addItem(self.match_s11_transformed_marker)
+        self.match_smith_plot.addItem(self.match_smith_original_marker)
+        self.match_smith_plot.addItem(self.match_smith_transformed_marker)
+
+        marker_pen = pg.mkPen("#475569", width=2, style=QtCore.Qt.PenStyle.DashLine)
+        self.match_s11_marker_line = pg.InfiniteLine(angle=90, movable=True, pen=marker_pen)
+        self.match_s11_marker_line.sigPositionChanged.connect(self._handle_match_marker_moved)
+        self.match_s11_plot.addItem(self.match_s11_marker_line, ignoreBounds=True)
+        marker_frequency_hz = self._matching_target_frequency_hz()
+        if marker_frequency_hz is not None:
+            self.match_marker_frequency_hz = marker_frequency_hz
+            self.match_s11_marker_line.setValue(marker_frequency_hz / self.frequency_scale.factor_hz)
+
+        self._reset_db_plot_view(
+            self.match_s11_plot,
+            [self.match_original_s11_db, self.match_transformed_s11_db],
+            frequency_span_hz=(float(frequencies_hz[0]), float(frequencies_hz[-1])),
+        )
+        self._update_matching_marker_outputs()
+
+    def _default_matching_marker_frequency(self, frequencies_hz: np.ndarray) -> float:
+        return 0.5 * (float(frequencies_hz[0]) + float(frequencies_hz[-1]))
 
     def _build_marker_plot_label(self) -> pg.TextItem:
         label = pg.TextItem(
@@ -802,6 +1588,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         if new_traces:
             self.traces.extend(new_traces)
+            self.traces.sort(key=_trace_sort_key)
             if self.marker_frequency_hz is None:
                 self.marker_frequency_hz = self._default_marker_frequency()
             self._refresh_plots()
@@ -854,6 +1641,12 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         if not self._marker_overlay_enabled():
             return
 
+        button = getattr(event, "button", None)
+        if callable(button):
+            button = button()
+        if button is not None and button != QtCore.Qt.MouseButton.LeftButton:
+            return
+
         if not hasattr(event, "scenePos"):
             return
 
@@ -884,6 +1677,14 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self._set_marker_line_values(self.marker_frequency_hz)
         self._update_marker_outputs()
 
+    def _handle_match_marker_moved(self) -> None:
+        if not self.match_s11_marker_line or self._updating_marker or not self._marker_overlay_enabled():
+            return
+
+        self.marker_frequency_hz = self.match_s11_marker_line.value() * self.frequency_scale.factor_hz
+        self._set_marker_line_values(self.marker_frequency_hz)
+        self._update_marker_outputs()
+
     def _handle_aoi_value_changed(self, _value: float) -> None:
         if self._updating_aoi_controls or not self._visible_traces():
             return
@@ -895,6 +1696,11 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         factor_hz = self._aoi_unit_factor_hz()
         start_hz = self.aoi_start_input.value() * factor_hz
         stop_hz = self.aoi_stop_input.value() * factor_hz
+        changed_control = self.sender()
+        if changed_control is self.aoi_start_input and start_hz > stop_hz:
+            stop_hz = start_hz
+        elif changed_control is self.aoi_stop_input and stop_hz < start_hz:
+            start_hz = stop_hz
         self.aoi_region_hz = _clamp_frequency_region_hz((start_hz, stop_hz), bounds_hz)
         self._sync_aoi_controls_to_region()
         self._update_aoi_region_item()
@@ -909,8 +1715,9 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             self._reset_aoi_controls()
 
     def _handle_frequency_unit_changed(self, unit: str) -> None:
+        view_state = self._capture_view_state()
         self.frequency_unit_mode = unit
-        self._refresh_plots()
+        self._refresh_plots(preserve_view_state=view_state)
 
     def _handle_marker_frequency_changed(self, value: float) -> None:
         if self._updating_marker_controls or not self._marker_overlay_enabled():
@@ -1099,10 +1906,12 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
     def _update_marker_outputs(self) -> None:
         self._sync_marker_frequency_input()
+        self._sync_match_target_frequency_input()
         self._update_marker_plot_label()
         self._update_s21_marker_plot_label()
         self._update_marker_table()
         self._update_s21_marker_table()
+        self._update_matching_marker_outputs()
 
     def _sync_marker_frequency_input(self) -> None:
         bounds_hz = self._frequency_span_hz()
@@ -1180,6 +1989,9 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
     def _update_s21_marker_plot_label_position(self, *_args: object) -> None:
         self._position_plot_label(self.s21_marker_plot_label, self.s21_plot)
+
+    def _update_match_marker_plot_label_position(self, *_args: object) -> None:
+        self._position_plot_label(self.match_marker_plot_label, self.match_s11_plot)
 
     def _position_plot_label(
         self,
@@ -1426,6 +2238,200 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         self._end_table_update(self.s21_marker_table, sort_column, sort_order)
 
+    def _update_matching_marker_outputs(self) -> None:
+        if self.match_original_gamma is None or self.match_transformed_gamma is None:
+            self.matching_suggestions = []
+            self.match_suggestion_table.setRowCount(0)
+            self.match_suggestion_label.setText(
+                "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+            )
+            self.match_summary_label.setText("Load a trace to preview a matching network.")
+            return
+
+        marker_visible = self._marker_overlay_enabled()
+        if self.match_s11_marker_line is not None:
+            self.match_s11_marker_line.setVisible(marker_visible)
+        if self.match_marker_plot_label is not None:
+            self.match_marker_plot_label.setVisible(marker_visible)
+
+        trace = self._matching_trace()
+        if trace is None:
+            self.matching_suggestions = []
+            self.match_suggestion_table.setRowCount(0)
+            self.match_suggestion_label.setText(
+                "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+            )
+            self.match_summary_label.setText("Load a trace to preview a matching network.")
+            return
+
+        frequency_hz = self._matching_target_frequency_hz()
+        if frequency_hz is None:
+            self.matching_suggestions = []
+            self.match_suggestion_table.setRowCount(0)
+            self.match_suggestion_label.setText(
+                "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+            )
+            self.match_summary_label.setText("Select a trace to evaluate the matching network.")
+            return
+
+        self.match_marker_frequency_hz = frequency_hz
+        if self.match_s11_marker_line is not None:
+            self.match_s11_marker_line.setValue(frequency_hz / self.frequency_scale.factor_hz)
+
+        original_gamma = trace.data.interpolated_gamma(frequency_hz)
+        if original_gamma is None:
+            self.matching_suggestions = []
+            self.match_suggestion_table.setRowCount(0)
+            self.match_suggestion_label.setText(
+                "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+            )
+            self.match_summary_label.setText("Target frequency is outside the selected trace range.")
+            return
+
+        original_impedance = gamma_to_impedance(original_gamma, trace.data.reference_impedance_ohms)
+        transformed_impedance = self._matched_impedance_at_frequency(frequency_hz)
+        if transformed_impedance is None:
+            self.matching_suggestions = []
+            self.match_suggestion_table.setRowCount(0)
+            self.match_suggestion_label.setText(
+                "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+            )
+            self.match_summary_label.setText("Target frequency is outside the selected trace range.")
+            return
+
+        transformed_gamma = impedance_to_gamma(
+            np.asarray([transformed_impedance], dtype=np.complex128),
+            trace.data.reference_impedance_ohms,
+        )[0]
+        display_frequency = frequency_hz / self.frequency_scale.factor_hz
+        original_s11_db = _parameter_db(original_gamma)
+        transformed_s11_db = _parameter_db(transformed_gamma)
+
+        if marker_visible:
+            self._set_scatter_point(
+                self.match_s11_original_marker,
+                (display_frequency, original_s11_db),
+            )
+            self._set_scatter_point(
+                self.match_s11_transformed_marker,
+                (display_frequency, transformed_s11_db),
+            )
+            self._set_scatter_point(
+                self.match_smith_original_marker,
+                (original_gamma.real, original_gamma.imag),
+            )
+            self._set_scatter_point(
+                self.match_smith_transformed_marker,
+                (transformed_gamma.real, transformed_gamma.imag),
+            )
+            if self.match_marker_plot_label is not None:
+                self.match_marker_plot_label.setText(
+                    f"Marker: {display_frequency:.6f} {self.frequency_scale.unit}"
+                )
+                self._update_match_marker_plot_label_position()
+        else:
+            self._set_scatter_point(self.match_s11_original_marker, None)
+            self._set_scatter_point(self.match_s11_transformed_marker, None)
+            self._set_scatter_point(self.match_smith_original_marker, None)
+            self._set_scatter_point(self.match_smith_transformed_marker, None)
+            if self.match_marker_plot_label is not None:
+                self.match_marker_plot_label.setText("Marker: n/a")
+
+        self.match_summary_label.setText(
+            " | ".join(
+                [
+                    f"At {display_frequency:.6f} {self.frequency_scale.unit}",
+                    f"Original {original_s11_db:.3f} dB, Z={_format_impedance(original_impedance)}",
+                    f"Matched {transformed_s11_db:.3f} dB, Z={_format_impedance(transformed_impedance)}",
+                    f"Delta {_format_signed(transformed_s11_db - original_s11_db, 3)} dB",
+                ]
+            )
+        )
+        self._update_matching_suggestions(
+            transformed_impedance=transformed_impedance,
+            transformed_s11_db=transformed_s11_db,
+            target_frequency_hz=frequency_hz,
+        )
+
+    def _matched_impedance_at_frequency(self, frequency_hz: float) -> complex | None:
+        trace = self._matching_trace()
+        if trace is None:
+            return None
+
+        original_gamma = trace.data.interpolated_gamma(frequency_hz)
+        if original_gamma is None:
+            return None
+
+        original_impedance = gamma_to_impedance(original_gamma, trace.data.reference_impedance_ohms)
+        matched_impedance = apply_matching_network(
+            np.asarray([original_impedance], dtype=np.complex128),
+            np.asarray([frequency_hz], dtype=np.float64),
+            self._matching_stages(),
+        )[0]
+        if not np.isfinite(matched_impedance.real) or not np.isfinite(matched_impedance.imag):
+            return None
+        return matched_impedance
+
+    def _update_matching_suggestions(
+        self,
+        *,
+        transformed_impedance: complex,
+        transformed_s11_db: float,
+        target_frequency_hz: float,
+    ) -> None:
+        trace = self._matching_trace()
+        if trace is None:
+            self.matching_suggestions = []
+            self.match_suggestion_table.setRowCount(0)
+            self.match_suggestion_label.setText(
+                "Suggestions evaluate one additional reactive stage (L/C only) at the target frequency."
+            )
+            return
+
+        self.matching_suggestions = suggest_matching_stages(
+            transformed_impedance,
+            target_frequency_hz,
+            trace.data.reference_impedance_ohms,
+        )
+        self.match_suggestion_table.setRowCount(len(self.matching_suggestions))
+
+        for row_index, suggestion in enumerate(self.matching_suggestions):
+            resulting_s11_db = _parameter_db(suggestion.resulting_gamma)
+            values = [
+                f"{suggestion.stage.topology} {suggestion.stage.component}",
+                f"{suggestion.stage.value:g} {suggestion.stage.unit}",
+                f"{resulting_s11_db:.3f}",
+                f"{transformed_s11_db - resulting_s11_db:.3f}",
+                _format_impedance(suggestion.resulting_impedance_ohms),
+            ]
+            sort_values = [
+                None,
+                suggestion.stage.value_si,
+                resulting_s11_db,
+                transformed_s11_db - resulting_s11_db,
+                None,
+            ]
+            self._set_table_row(
+                self.match_suggestion_table,
+                row_index,
+                "#1e293b",
+                values,
+                sort_values=sort_values,
+            )
+
+        if self.matching_suggestions:
+            self.match_suggestion_table.selectRow(0)
+
+        display_frequency = target_frequency_hz / self.frequency_scale.factor_hz
+        self.match_suggestion_label.setText(
+            " ".join(
+                [
+                    f"Suggestions are single reactive next stages at {display_frequency:.6f} {self.frequency_scale.unit}.",
+                    "They append at the bottom, on the coax/feed side of the current network.",
+                ]
+            )
+        )
+
     def _set_scatter_point(
         self,
         scatter: pg.ScatterPlotItem | None,
@@ -1499,6 +2505,18 @@ def _format_impedance(value: complex) -> str:
         return "open"
     sign = "+" if value.imag >= 0.0 else "-"
     return f"{value.real:.2f} {sign} j{abs(value.imag):.2f}"
+
+
+def _natural_sort_key(value: str) -> tuple[tuple[int, int | str], ...]:
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.casefold())
+        for part in re.split(r"(\d+)", value)
+        if part
+    )
+
+
+def _trace_sort_key(trace: LoadedTrace) -> tuple[tuple[tuple[int, int | str], ...], str]:
+    return (_natural_sort_key(trace.data.label), str(trace.data.path).casefold())
 
 
 def _default_frequency_region_hz(bounds_hz: tuple[float, float]) -> tuple[float, float]:

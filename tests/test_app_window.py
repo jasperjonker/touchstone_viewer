@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 import pytest
@@ -44,6 +45,22 @@ class _FakeDropEvent:
         self.ignored = True
 
 
+class _FakeMouseClickEvent:
+    def __init__(
+        self,
+        scene_position: QtCore.QPointF,
+        button: QtCore.Qt.MouseButton,
+    ) -> None:
+        self._scene_position = scene_position
+        self._button = button
+
+    def scenePos(self) -> QtCore.QPointF:
+        return self._scene_position
+
+    def button(self) -> QtCore.Qt.MouseButton:
+        return self._button
+
+
 def _write_touchstone_file(path: Path) -> Path:
     path.write_text(
         "# GHz S MA R 50\n"
@@ -70,6 +87,19 @@ def _write_touchstone_two_port_file(path: Path) -> Path:
     return path
 
 
+def _matching_stage_state(window: TouchstoneViewerWindow) -> list[tuple[str, str, str, float, bool]]:
+    return [
+        (
+            stage_controls.topology_combo.currentText(),
+            stage_controls.component_combo.currentText(),
+            stage_controls.unit_combo.currentText(),
+            stage_controls.value_input.value(),
+            stage_controls.enabled_checkbox.isChecked(),
+        )
+        for stage_controls in window.matching_stage_controls
+    ]
+
+
 def test_window_initial_load_builds_plots(
     qapp: QtWidgets.QApplication,
     isolated_qsettings: None,
@@ -86,7 +116,7 @@ def test_window_initial_load_builds_plots(
     assert window.aoi_start_input.isEnabled()
     assert window.aoi_stop_input.isEnabled()
     assert window.marker_table.rowCount() == 1
-    assert window.tab_widget.count() == 2
+    assert window.tab_widget.count() == 3
     assert window.controls_panel.isHidden()
     assert window.controls_toggle_button.arrowType() == QtCore.Qt.ArrowType.RightArrow
     assert window.smith_plot.getViewBox().state["mouseEnabled"] == [True, True]
@@ -222,6 +252,38 @@ def test_view_and_trace_controls_drive_visibility_and_reference_state(
     window.close()
 
 
+def test_loaded_traces_are_sorted_naturally_in_controls(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    trace_10 = _write_touchstone_file(tmp_path / "trace_10.s1p")
+    trace_2 = _write_touchstone_file(tmp_path / "trace_2.s1p")
+    trace_1 = _write_touchstone_file(tmp_path / "trace_1.s1p")
+
+    window = TouchstoneViewerWindow([trace_10, trace_2, trace_1])
+
+    assert [trace.data.label for trace in window.traces] == ["trace_1", "trace_2", "trace_10"]
+    assert [window.trace_visibility_list.item(index).text() for index in range(3)] == [
+        "trace_1",
+        "trace_2",
+        "trace_10",
+    ]
+    assert [window.reference_trace_combo.itemText(index) for index in range(4)] == [
+        "None",
+        "trace_1",
+        "trace_2",
+        "trace_10",
+    ]
+    assert [window.match_trace_combo.itemText(index) for index in range(3)] == [
+        "trace_1",
+        "trace_2",
+        "trace_10",
+    ]
+
+    window.close()
+
+
 def test_empty_plots_use_negative_db_range_and_default_threshold(
     qapp: QtWidgets.QApplication,
     isolated_qsettings: None,
@@ -291,6 +353,161 @@ def test_reset_view_restores_frequency_and_smith_ranges(
     )
     assert window.smith_plot.getPlotItem().viewRange()[0] == pytest.approx(default_smith_x_range)
     assert window.smith_plot.getPlotItem().viewRange()[1] == pytest.approx(default_smith_y_range)
+
+    window.close()
+
+
+def test_right_click_does_not_move_marker_but_left_click_still_does(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "clicks.s1p")
+
+    window = TouchstoneViewerWindow([file_path])
+    view_box = window.s11_plot.getPlotItem().vb
+    scene_position = QtCore.QPointF(10.0, 20.0)
+    monkeypatch.setattr(
+        view_box,
+        "sceneBoundingRect",
+        lambda: QtCore.QRectF(0.0, 0.0, 100.0, 100.0),
+    )
+    monkeypatch.setattr(
+        view_box,
+        "mapSceneToView",
+        lambda _position: QtCore.QPointF(2.8, -10.0),
+    )
+
+    original_marker_hz = window.marker_frequency_hz
+    assert original_marker_hz is not None
+
+    right_click = _FakeMouseClickEvent(
+        scene_position,
+        QtCore.Qt.MouseButton.RightButton,
+    )
+    window._handle_plot_click(window.s11_plot, right_click)
+
+    assert window.marker_frequency_hz == pytest.approx(original_marker_hz)
+
+    left_click = _FakeMouseClickEvent(
+        scene_position,
+        QtCore.Qt.MouseButton.LeftButton,
+    )
+    window._handle_plot_click(window.s11_plot, left_click)
+
+    assert window.marker_frequency_hz == pytest.approx(2.8e9)
+    assert window.marker_line is not None
+    assert window.marker_line.value() == pytest.approx(2.8)
+
+    window.close()
+
+
+def test_frequency_unit_change_preserves_view_marker_and_aoi(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "preserve_view.s1p")
+
+    window = TouchstoneViewerWindow([file_path])
+    window.s11_plot.getPlotItem().setXRange(2.2, 2.4, padding=0.0)
+    window.s11_plot.getPlotItem().setYRange(-18.0, -4.0, padding=0.0)
+    window.marker_frequency_input.setValue(2.3)
+    window.aoi_unit_combo.setCurrentText("GHz")
+    window.aoi_start_input.setValue(2.15)
+    window.aoi_stop_input.setValue(2.45)
+
+    window.frequency_unit_combo.setCurrentText("MHz")
+
+    assert window.frequency_scale.unit == "MHz"
+    assert window.marker_frequency_hz == pytest.approx(2.3e9)
+    assert window.marker_line is not None
+    assert window.marker_line.value() == pytest.approx(2300.0)
+    assert window.aoi_region_hz == pytest.approx((2.15e9, 2.45e9))
+    assert window.s11_plot.getPlotItem().viewRange()[0] == pytest.approx([2200.0, 2400.0])
+    assert window.s11_plot.getPlotItem().viewRange()[1] == pytest.approx([-18.0, -4.0])
+
+    window.close()
+
+
+def test_match_tab_applies_enabled_network_stage(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "match_trace.s1p")
+
+    window = TouchstoneViewerWindow([file_path])
+
+    assert window.match_trace_combo.count() == 1
+    assert window.match_target_frequency_input.value() == pytest.approx(2.5)
+    assert window.match_original_s11_db is not None
+    assert window.match_transformed_s11_db is not None
+    assert np.allclose(window.match_original_s11_db, window.match_transformed_s11_db)
+    assert _matching_stage_state(window) == [
+        ("Shunt", "C", "pF", 0.0, False),
+        ("Series", "R", "ohm", 0.0, True),
+        ("Shunt", "C", "pF", 0.0, False),
+    ]
+    assert "antenna/load -> coax/feed" in window.match_order_label.text()
+    assert window.match_suggestion_table.rowCount() > 0
+    assert all(
+        window.match_suggestion_table.item(row, 0).text().split()[1] in {"L", "C"}
+        for row in range(window.match_suggestion_table.rowCount())
+    )
+    assert "append at the bottom" in window.match_suggestion_label.text()
+    assert "reactive" in window.match_suggestion_label.text().lower()
+
+    window.match_target_frequency_input.setValue(2.3)
+
+    assert window.marker_frequency_hz == pytest.approx(2.3e9)
+    assert window.match_summary_label.text().startswith("At 2.300000 GHz")
+
+    window.add_matching_stage_button.click()
+
+    assert len(window.matching_stage_controls) == 4
+
+    stage_controls = window.matching_stage_controls[-1]
+    stage_controls.component_combo.setCurrentText("R")
+    stage_controls.unit_combo.setCurrentText("ohm")
+    stage_controls.value_input.setValue(10.0)
+    stage_controls.enabled_checkbox.setChecked(True)
+
+    assert window.match_transformed_s11_db is not None
+    assert not np.allclose(window.match_original_s11_db, window.match_transformed_s11_db)
+    assert window.match_s11_marker_line is not None
+    assert window.match_summary_label.text().startswith("At 2.300000 GHz")
+    assert "Matched" in window.match_summary_label.text()
+
+    window.match_suggestion_table.selectRow(0)
+    selected_action = window.match_suggestion_table.item(0, 0).text()
+    selected_value = window.match_suggestion_table.item(0, 1).text()
+    window.apply_matching_suggestion_button.click()
+
+    assert len(window.matching_stage_controls) == 5
+    appended_stage = window.matching_stage_controls[-1]
+    assert (
+        f"{appended_stage.topology_combo.currentText()} {appended_stage.component_combo.currentText()}"
+        == selected_action
+    )
+    assert appended_stage.component_combo.currentText() in {"L", "C"}
+    assert (
+        f"{appended_stage.value_input.value():g} {appended_stage.unit_combo.currentText()}"
+        == selected_value
+    )
+
+    appended_stage.remove_button.click()
+
+    assert len(window.matching_stage_controls) == 4
+
+    window.reset_matching_button.click()
+
+    assert _matching_stage_state(window) == [
+        ("Shunt", "C", "pF", 0.0, False),
+        ("Series", "R", "ohm", 0.0, True),
+        ("Shunt", "C", "pF", 0.0, False),
+    ]
 
     window.close()
 
@@ -374,6 +591,33 @@ def test_aoi_controls_update_region_and_clear_resets_state(
     assert not window.aoi_start_input.isEnabled()
     assert not window.aoi_stop_input.isEnabled()
     assert window.marker_table.rowCount() == 0
+
+    window.close()
+
+
+def test_aoi_inputs_collapse_to_the_edited_bound_when_crossed(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "aoi_crossing.s1p")
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_unit_combo.setCurrentText("GHz")
+    window.aoi_start_input.setValue(2.1)
+    window.aoi_stop_input.setValue(2.7)
+
+    window.aoi_start_input.setValue(2.8)
+
+    assert window.aoi_region_hz == pytest.approx((2.8e9, 2.8e9))
+    assert window.aoi_start_input.value() == pytest.approx(2.8)
+    assert window.aoi_stop_input.value() == pytest.approx(2.8)
+
+    window.aoi_stop_input.setValue(2.2)
+
+    assert window.aoi_region_hz == pytest.approx((2.2e9, 2.2e9))
+    assert window.aoi_start_input.value() == pytest.approx(2.2)
+    assert window.aoi_stop_input.value() == pytest.approx(2.2)
 
     window.close()
 
