@@ -25,6 +25,7 @@ It is designed for quick antenna and matching-network inspection with:
 - Inspect a specific frequency using the movable marker.
 - Open the `Controls` panel when you want to adjust overlays instead of keeping those inputs on screen all the time.
 - Override the plotted frequency unit with `Hz`, `kHz`, `MHz`, or `GHz`.
+- Force a light application theme from the `View` controls when the OS palette is too dark.
 - Define an area of interest with start/stop fields and a shared frequency unit selector.
 - Toggle the area-of-interest band on or off without losing its saved frequency range.
 - Show AOI area directly in the `S11` marker table as an extra column.
@@ -130,6 +131,7 @@ The project currently enforces a minimum total coverage of `80%`.
 - Use `Threshold` -> `Show` to enable the horizontal reference line on both plots.
 - Adjust the `Threshold` value to move that line, for example `10 dB` to show the `-10 dB` reference.
 - Use `Marker` -> `Show` to enable or hide the vertical marker lines and marker tables.
+- Use `View` -> `Theme` -> `Light` to force the UI into a light palette; leave it unchecked to follow the default system look.
 - Click any marker-table column header to sort by that column.
 - Use the `Traces` list to hide or show individual files without removing them from the session.
 - Use `Compare To` to select the baseline used for delta values in the marker tables and the highlighted reference line.

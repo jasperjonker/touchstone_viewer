@@ -56,6 +56,7 @@ DEFAULT_THRESHOLD_VISIBLE = False
 DEFAULT_CONTROLS_VISIBLE = False
 DEFAULT_AOI_VISIBLE = True
 DEFAULT_MARKER_VISIBLE = True
+DEFAULT_FORCE_LIGHT_MODE = False
 DEFAULT_FREQUENCY_UNIT_MODE = "Auto"
 DEFAULT_AOI_UNIT = "GHz"
 CONFIG_SAVE_DELAY_MS = 400
@@ -70,6 +71,14 @@ MATCHING_DEFAULT_NETWORK = [
     ("Series", "R", "ohm", 0.0, True),
     ("Shunt", "C", "pF", 0.0, False),
 ]
+LIGHT_MODE_WINDOW_COLOR = "#f8fafc"
+LIGHT_MODE_WINDOW_TEXT_COLOR = "#0f172a"
+LIGHT_MODE_BASE_COLOR = "#ffffff"
+LIGHT_MODE_ALTERNATE_BASE_COLOR = "#f1f5f9"
+LIGHT_MODE_BUTTON_COLOR = "#ffffff"
+LIGHT_MODE_HIGHLIGHT_COLOR = "#bfdbfe"
+LIGHT_MODE_PLACEHOLDER_TEXT_COLOR = "#64748b"
+_DEFAULT_APPLICATION_PALETTE: QtGui.QPalette | None = None
 
 
 @dataclass(frozen=True)
@@ -135,6 +144,7 @@ class AoiPreset:
 @dataclass
 class ViewerUserConfig:
     frequency_unit_mode: str = DEFAULT_FREQUENCY_UNIT_MODE
+    force_light_mode: bool = DEFAULT_FORCE_LIGHT_MODE
     controls_visible: bool = DEFAULT_CONTROLS_VISIBLE
     aoi_visible: bool = DEFAULT_AOI_VISIBLE
     aoi_start_hz: float | None = None
@@ -165,6 +175,8 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         self.setAcceptDrops(True)
         self.settings = QtCore.QSettings("TouchstoneViewer", "Touch")
         self.user_config = _load_viewer_user_config()
+        self.force_light_mode = self.user_config.force_light_mode
+        _apply_application_appearance(self.force_light_mode)
 
         self.traces: list[LoadedTrace] = []
         self.frequency_scale = FrequencyScale(1.0e6, "MHz")
@@ -301,6 +313,14 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         view_prefix = QtWidgets.QLabel("View")
         view_layout.addWidget(view_prefix)
+
+        theme_prefix = QtWidgets.QLabel("Theme")
+        view_layout.addWidget(theme_prefix)
+
+        self.light_mode_checkbox = QtWidgets.QCheckBox("Light")
+        self.light_mode_checkbox.setChecked(self.force_light_mode)
+        self.light_mode_checkbox.toggled.connect(self._handle_light_mode_toggled)
+        view_layout.addWidget(self.light_mode_checkbox)
 
         frequency_unit_prefix = QtWidgets.QLabel("Freq")
         view_layout.addWidget(frequency_unit_prefix)
@@ -1167,6 +1187,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
         return ViewerUserConfig(
             frequency_unit_mode=self.frequency_unit_mode,
+            force_light_mode=self.force_light_mode,
             controls_visible=self.controls_toggle_button.isChecked(),
             aoi_visible=self.aoi_enabled_checkbox.isChecked(),
             aoi_start_hz=aoi_start_hz,
@@ -2001,6 +2022,11 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
         view_state = self._capture_view_state()
         self.frequency_unit_mode = unit
         self._refresh_plots(preserve_view_state=view_state)
+        self._schedule_user_config_save()
+
+    def _handle_light_mode_toggled(self, enabled: bool) -> None:
+        self.force_light_mode = enabled
+        _apply_application_appearance(enabled)
         self._schedule_user_config_save()
 
     def _handle_marker_frequency_changed(self, value: float) -> None:
@@ -2959,6 +2985,94 @@ def _viewer_config_path() -> Path:
     return base_directory / "touchstone_viewer" / "config.yaml"
 
 
+def _build_light_mode_palette() -> QtGui.QPalette:
+    palette = QtGui.QPalette()
+    disabled_text = QtGui.QColor("#94a3b8")
+
+    palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(LIGHT_MODE_WINDOW_COLOR))
+    palette.setColor(
+        QtGui.QPalette.ColorRole.WindowText,
+        QtGui.QColor(LIGHT_MODE_WINDOW_TEXT_COLOR),
+    )
+    palette.setColor(QtGui.QPalette.ColorRole.Base, QtGui.QColor(LIGHT_MODE_BASE_COLOR))
+    palette.setColor(
+        QtGui.QPalette.ColorRole.AlternateBase,
+        QtGui.QColor(LIGHT_MODE_ALTERNATE_BASE_COLOR),
+    )
+    palette.setColor(QtGui.QPalette.ColorRole.ToolTipBase, QtGui.QColor(LIGHT_MODE_BASE_COLOR))
+    palette.setColor(
+        QtGui.QPalette.ColorRole.ToolTipText,
+        QtGui.QColor(LIGHT_MODE_WINDOW_TEXT_COLOR),
+    )
+    palette.setColor(QtGui.QPalette.ColorRole.Text, QtGui.QColor(LIGHT_MODE_WINDOW_TEXT_COLOR))
+    palette.setColor(QtGui.QPalette.ColorRole.Button, QtGui.QColor(LIGHT_MODE_BUTTON_COLOR))
+    palette.setColor(
+        QtGui.QPalette.ColorRole.ButtonText,
+        QtGui.QColor(LIGHT_MODE_WINDOW_TEXT_COLOR),
+    )
+    palette.setColor(QtGui.QPalette.ColorRole.BrightText, QtGui.QColor("#ffffff"))
+    palette.setColor(QtGui.QPalette.ColorRole.Link, QtGui.QColor("#2563eb"))
+    palette.setColor(QtGui.QPalette.ColorRole.Highlight, QtGui.QColor(LIGHT_MODE_HIGHLIGHT_COLOR))
+    palette.setColor(
+        QtGui.QPalette.ColorRole.HighlightedText,
+        QtGui.QColor(LIGHT_MODE_WINDOW_TEXT_COLOR),
+    )
+    palette.setColor(
+        QtGui.QPalette.ColorRole.PlaceholderText,
+        QtGui.QColor(LIGHT_MODE_PLACEHOLDER_TEXT_COLOR),
+    )
+    palette.setColor(QtGui.QPalette.ColorRole.Light, QtGui.QColor("#ffffff"))
+    palette.setColor(QtGui.QPalette.ColorRole.Midlight, QtGui.QColor("#e2e8f0"))
+    palette.setColor(QtGui.QPalette.ColorRole.Mid, QtGui.QColor("#cbd5e1"))
+    palette.setColor(QtGui.QPalette.ColorRole.Dark, QtGui.QColor("#94a3b8"))
+    palette.setColor(QtGui.QPalette.ColorRole.Shadow, QtGui.QColor("#64748b"))
+
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Disabled,
+        QtGui.QPalette.ColorRole.WindowText,
+        disabled_text,
+    )
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Disabled,
+        QtGui.QPalette.ColorRole.Text,
+        disabled_text,
+    )
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Disabled,
+        QtGui.QPalette.ColorRole.ButtonText,
+        disabled_text,
+    )
+    palette.setColor(
+        QtGui.QPalette.ColorGroup.Disabled,
+        QtGui.QPalette.ColorRole.HighlightedText,
+        disabled_text,
+    )
+    return palette
+
+
+def _apply_application_appearance(force_light_mode: bool) -> None:
+    global _DEFAULT_APPLICATION_PALETTE
+
+    app = QtWidgets.QApplication.instance()
+    if app is None:
+        return
+
+    app.setStyle("Fusion")
+    if _DEFAULT_APPLICATION_PALETTE is None:
+        _DEFAULT_APPLICATION_PALETTE = QtGui.QPalette(app.palette())
+
+    if force_light_mode:
+        app.setPalette(_build_light_mode_palette())
+    else:
+        app.setPalette(QtGui.QPalette(_DEFAULT_APPLICATION_PALETTE))
+
+    pg.setConfigOptions(
+        antialias=True,
+        background=LIGHT_MODE_WINDOW_COLOR,
+        foreground="#24313f",
+    )
+
+
 def _yaml_scalar(value: object) -> str:
     if value is None:
         return "null"
@@ -3057,6 +3171,10 @@ def _load_viewer_user_config() -> ViewerUserConfig:
     if frequency_unit_mode in {DEFAULT_FREQUENCY_UNIT_MODE, *FREQUENCY_UNIT_FACTORS_HZ.keys()}:
         config.frequency_unit_mode = str(frequency_unit_mode)
 
+    force_light_mode = raw_config.get("force_light_mode")
+    if isinstance(force_light_mode, bool):
+        config.force_light_mode = force_light_mode
+
     controls_visible = raw_config.get("controls_visible")
     if isinstance(controls_visible, bool):
         config.controls_visible = controls_visible
@@ -3120,6 +3238,7 @@ def _write_viewer_user_config(config: ViewerUserConfig) -> None:
     lines = [
         "# Touchstone Viewer user configuration",
         f"frequency_unit_mode: {_yaml_scalar(config.frequency_unit_mode)}",
+        f"force_light_mode: {_yaml_scalar(config.force_light_mode)}",
         f"controls_visible: {_yaml_scalar(config.controls_visible)}",
         f"aoi_visible: {_yaml_scalar(config.aoi_visible)}",
         f"aoi_start_hz: {_yaml_scalar(config.aoi_start_hz)}",
@@ -3164,10 +3283,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
 
-    pg.setConfigOptions(antialias=True, background="#f8fafc", foreground="#24313f")
-
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    app.setStyle("Fusion")
+    _apply_application_appearance(DEFAULT_FORCE_LIGHT_MODE)
 
     window = TouchstoneViewerWindow(args.files)
     window.showMaximized()

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 import pytest
 
 from touchstone_viewer.app import LAST_OPEN_DIRECTORY_KEY, TouchstoneViewerWindow
@@ -658,6 +658,7 @@ def test_common_settings_are_persisted_in_yaml_config(
     config_path = Path(os.environ["XDG_CONFIG_HOME"]) / "touchstone_viewer" / "config.yaml"
 
     window = TouchstoneViewerWindow([file_path])
+    window.light_mode_checkbox.setChecked(True)
     window.frequency_unit_combo.setCurrentText("MHz")
     window.aoi_unit_combo.setCurrentText("MHz")
     window.aoi_start_input.setValue(2400.0)
@@ -670,12 +671,14 @@ def test_common_settings_are_persisted_in_yaml_config(
     assert config_path.exists()
     config_text = config_path.read_text(encoding="utf-8")
     assert 'frequency_unit_mode: "MHz"' in config_text
+    assert "force_light_mode: true" in config_text
     assert "marker_frequency_hz: 2450000000.0" in config_text
     assert "aoi_start_hz: 2400000000.0" in config_text
     assert "aoi_stop_hz: 2500000000.0" in config_text
 
     restored_window = TouchstoneViewerWindow([file_path])
 
+    assert restored_window.light_mode_checkbox.isChecked()
     assert restored_window.frequency_unit_combo.currentText() == "MHz"
     assert restored_window.aoi_unit_combo.currentText() == "MHz"
     assert restored_window.aoi_start_input.value() == pytest.approx(2400.0)
@@ -685,6 +688,26 @@ def test_common_settings_are_persisted_in_yaml_config(
     assert restored_window.threshold_input.value() == pytest.approx(6.0)
 
     restored_window.close()
+
+
+def test_light_mode_toggle_applies_and_restores_palette(
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "light_mode.s1p")
+    window = TouchstoneViewerWindow([file_path])
+    original_window_color = qapp.palette().color(QtGui.QPalette.ColorRole.Window).name()
+    window.light_mode_checkbox.setChecked(True)
+
+    assert qapp.palette().color(QtGui.QPalette.ColorRole.Window).name() == "#f8fafc"
+    assert window.palette().color(QtGui.QPalette.ColorRole.Window).name() == "#f8fafc"
+
+    window.light_mode_checkbox.setChecked(False)
+
+    assert qapp.palette().color(QtGui.QPalette.ColorRole.Window).name() == original_window_color
+
+    window.close()
 
 
 def test_aoi_presets_can_be_saved_and_reused(
