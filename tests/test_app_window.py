@@ -989,7 +989,7 @@ def test_preset_combo_switches_single_band_selection_and_custom_clears_it(
 
     assert window.aoi_preset_combo.currentText() == "GNSS L5"
     assert window.aoi_enabled_checkbox.isChecked()
-    assert action_state() == {"GNSS L1": False, "GNSS L5": True}
+    assert action_state() == {"Custom": False, "GNSS L1": False, "GNSS L5": True}
 
     window.aoi_enabled_checkbox.setChecked(False)
 
@@ -999,7 +999,7 @@ def test_preset_combo_switches_single_band_selection_and_custom_clears_it(
     window.aoi_preset_combo.setCurrentText("GNSS L1")
 
     assert window.aoi_enabled_checkbox.isChecked()
-    assert action_state() == {"GNSS L1": True, "GNSS L5": False}
+    assert action_state() == {"Custom": False, "GNSS L1": True, "GNSS L5": False}
     assert window.aoi_preset_bands_button.text() == "Bands (1)"
 
     window.aoi_preset_combo.setCurrentText("Custom")

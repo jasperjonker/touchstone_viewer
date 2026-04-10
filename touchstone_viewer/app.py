@@ -1358,10 +1358,14 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
             self._updating_aoi_preset_band_controls = False
 
     def _custom_aoi_band_available(self) -> bool:
-        return self.aoi_region_hz is not None and bool(self.traces) and self._selected_aoi_preset_name is None
+        return self.aoi_region_hz is not None and bool(self.traces)
 
     def _custom_aoi_band_selected(self) -> bool:
-        return self._custom_aoi_band_available() and self.aoi_enabled_checkbox.isChecked()
+        return (
+            self._custom_aoi_band_available()
+            and self._selected_aoi_preset_name is None
+            and self.aoi_enabled_checkbox.isChecked()
+        )
 
     def _handle_custom_aoi_band_toggled(self, visible: bool) -> None:
         if self._updating_aoi_preset_band_controls or not self._custom_aoi_band_available():
