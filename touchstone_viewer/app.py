@@ -2008,7 +2008,7 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
     def _refresh_aoi_preset_regions(self) -> None:
         self._clear_aoi_preset_regions()
-        if not self._aoi_overlay_enabled():
+        if not self._aoi_preset_overlays_enabled():
             return
 
         bounds_hz = self._frequency_span_hz()
@@ -2390,6 +2390,9 @@ class TouchstoneViewerWindow(QtWidgets.QMainWindow):
 
     def _aoi_overlay_enabled(self) -> bool:
         return bool(self._visible_traces()) and self.aoi_enabled_checkbox.isChecked()
+
+    def _aoi_preset_overlays_enabled(self) -> bool:
+        return bool(self._visible_traces()) and bool(self._visible_aoi_preset_names)
 
     def _marker_overlay_enabled(self) -> bool:
         return bool(self._visible_traces()) and self.marker_enabled_checkbox.isChecked()

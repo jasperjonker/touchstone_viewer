@@ -990,11 +990,12 @@ def test_preset_combo_switches_single_band_selection_and_custom_clears_it(
     assert window.aoi_preset_combo.currentText() == "GNSS L5"
     assert window.aoi_enabled_checkbox.isChecked()
     assert action_state() == {"Custom": False, "GNSS L1": False, "GNSS L5": True}
+    assert set(window.aoi_preset_region_items) == {"GNSS L5"}
 
     window.aoi_enabled_checkbox.setChecked(False)
 
     assert not window.aoi_enabled_checkbox.isChecked()
-    assert window.aoi_preset_region_items == {}
+    assert set(window.aoi_preset_region_items) == {"GNSS L5"}
 
     window.aoi_preset_combo.setCurrentText("GNSS L1")
 
@@ -1184,8 +1185,8 @@ def test_multiple_aoi_preset_bands_can_be_shown_at_once(
     window.aoi_enabled_checkbox.setChecked(False)
 
     assert not window.aoi_enabled_checkbox.isChecked()
-    assert window.aoi_preset_region_items == {}
-    assert window.aoi_preset_label_items == {}
+    assert set(window.aoi_preset_region_items) == {"Galileo E1"}
+    assert set(window.aoi_preset_label_items) == {"Galileo E1"}
 
     band_actions = {
         action.text(): action
@@ -1212,8 +1213,8 @@ def test_multiple_aoi_preset_bands_can_be_shown_at_once(
 
     window.aoi_enabled_checkbox.setChecked(False)
 
-    assert window.aoi_preset_region_items == {}
-    assert window.aoi_preset_label_items == {}
+    assert set(window.aoi_preset_region_items) == {"GPS L1", "Galileo E1"}
+    assert set(window.aoi_preset_label_items) == {"GPS L1", "Galileo E1"}
 
     window.aoi_enabled_checkbox.setChecked(True)
 
@@ -1225,6 +1226,56 @@ def test_multiple_aoi_preset_bands_can_be_shown_at_once(
     assert window.aoi_preset_region_items["Galileo E1"].getRegion() == pytest.approx(
         [1598.0, 1602.0]
     )
+
+    window.close()
+
+
+def test_disabling_custom_keeps_enabled_preset_band_visible(
+    monkeypatch,
+    qapp: QtWidgets.QApplication,
+    isolated_qsettings: None,
+    tmp_path: Path,
+) -> None:
+    file_path = _write_touchstone_file(tmp_path / "disable_custom_keeps_preset.s1p")
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("GNSS L1", True),
+    )
+
+    window = TouchstoneViewerWindow([file_path])
+    window.aoi_start_input.setValue(2.1)
+    window.aoi_stop_input.setValue(2.7)
+    window.save_aoi_preset_button.click()
+
+    window.aoi_preset_combo.setCurrentText("Custom")
+    window.aoi_start_input.setValue(2.2)
+    window.aoi_stop_input.setValue(2.6)
+
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["GNSS L1"].setChecked(True)
+    qapp.processEvents()
+
+    assert set(window.aoi_preset_region_items) == {"GNSS L1"}
+    assert window.aoi_region_item is not None
+    assert window.aoi_region_item.isVisible()
+
+    band_actions = {
+        action.text(): action
+        for action in window.aoi_preset_bands_menu.actions()
+        if action.isCheckable()
+    }
+    band_actions["Custom"].setChecked(False)
+    qapp.processEvents()
+
+    assert not window.aoi_enabled_checkbox.isChecked()
+    assert set(window.aoi_preset_region_items) == {"GNSS L1"}
+    assert window.aoi_region_item is not None
+    assert not window.aoi_region_item.isVisible()
 
     window.close()
 
