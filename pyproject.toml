@@ -21,7 +21,7 @@ touchstone-viewer = "touchstone_viewer.app:main"
 
 [dependency-groups]
 dev = [
-  "pytest>=8.3",
+  "pytest>=9.0.3",
   "pytest-cov>=6.1",
 ]
 
